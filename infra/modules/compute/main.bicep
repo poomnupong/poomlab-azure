@@ -38,7 +38,7 @@ var pipName = 'pip-${projectName}-gw1-${location}'
 var osDiskName = 'osdisk-${projectName}-gw1-${location}'
 
 // Use custom NixOS image if provided, otherwise fall back to Ubuntu
-var useCustomImage = !empty(nixosImageId)
+var useCustomImage = !empty(trim(nixosImageId))
 
 // =====================================================================
 // Public IP
@@ -169,6 +169,81 @@ resource azureMonitorAgent 'Microsoft.Compute/virtualMachines/extensions@2024-03
     typeHandlerVersion: '1.0'
     autoUpgradeMinorVersion: true
     enableAutomaticUpgrade: true
+  }
+}
+
+// Azure Monitor Agent requires a Data Collection Rule (DCR) and an
+// association to the VM in order to route guest telemetry to Log Analytics.
+resource vmDataCollectionRule 'Microsoft.Insights/dataCollectionRules@2023-03-11' = if (!useCustomImage) {
+  name: '${vmName}-dcr'
+  location: location
+  tags: tags
+  kind: 'Linux'
+  properties: {
+    destinations: {
+      logAnalytics: [
+        {
+          name: 'logAnalyticsDestination'
+          workspaceResourceId: logAnalyticsWorkspaceId
+        }
+      ]
+    }
+    dataSources: {
+      performanceCounters: [
+        {
+          name: 'perfCounterDataSource'
+          streams: [
+            'Microsoft-Perf'
+          ]
+          samplingFrequencyInSeconds: 60
+          counterSpecifiers: [
+            '\\Processor(_Total)\\% Processor Time'
+            '\\Memory\\Available MBytes'
+            '\\LogicalDisk(_Total)\\% Free Space'
+          ]
+        }
+      ]
+      syslog: [
+        {
+          name: 'syslogDataSource'
+          streams: [
+            'Microsoft-Syslog'
+          ]
+          facilityNames: [
+            '*'
+          ]
+          logLevels: [
+            '*'
+          ]
+        }
+      ]
+    }
+    dataFlows: [
+      {
+        streams: [
+          'Microsoft-Perf'
+        ]
+        destinations: [
+          'logAnalyticsDestination'
+        ]
+      }
+      {
+        streams: [
+          'Microsoft-Syslog'
+        ]
+        destinations: [
+          'logAnalyticsDestination'
+        ]
+      }
+    ]
+  }
+}
+
+resource vmDataCollectionRuleAssociation 'Microsoft.Insights/dataCollectionRuleAssociations@2022-06-01' = if (!useCustomImage) {
+  name: '${vmName}-dcr-association'
+  scope: vm
+  properties: {
+    dataCollectionRuleId: vmDataCollectionRule.id
   }
 }
 

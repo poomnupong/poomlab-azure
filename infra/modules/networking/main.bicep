@@ -18,6 +18,9 @@ param defaultSubnetPrefix string
 @description('Log Analytics workspace resource ID for diagnostics')
 param logAnalyticsWorkspaceId string
 
+@description('Source address prefix for SSH access (e.g. your public IP in CIDR notation). Leave empty to omit the SSH rule.')
+param sshSourceAddressPrefix string = ''
+
 @description('Resource tags')
 param tags object
 
@@ -30,6 +33,8 @@ var nsgGatewayName = 'nsg-${projectName}-gateway-${location}'
 var nsgDefaultName = 'nsg-${projectName}-default-${location}'
 var natGatewayName = 'natgw-${projectName}-hub-${location}'
 var natGatewayPipName = 'pip-${projectName}-natgw-${location}'
+var gatewaySubnetName = 'snet-gateway'
+var defaultSubnetName = 'snet-default'
 
 // =====================================================================
 // Network Security Groups
@@ -41,19 +46,21 @@ resource nsgGateway 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
   tags: tags
   properties: {
     securityRules: [
-      {
-        name: 'AllowSSHFromHome'
-        properties: {
-          priority: 1000
-          direction: 'Inbound'
-          access: 'Allow'
-          protocol: 'Tcp'
-          sourcePortRange: '*'
-          destinationPortRange: '22'
-          sourceAddressPrefix: '99.7.231.75/32'
-          destinationAddressPrefix: '*'
+      ...(!empty(sshSourceAddressPrefix) ? [
+        {
+          name: 'AllowSSHFromTrusted'
+          properties: {
+            priority: 1000
+            direction: 'Inbound'
+            access: 'Allow'
+            protocol: 'Tcp'
+            sourcePortRange: '*'
+            destinationPortRange: '22'
+            sourceAddressPrefix: sshSourceAddressPrefix
+            destinationAddressPrefix: '*'
+          }
         }
-      }
+      ] : [])
       {
         // Open to all sources — required for Tailscale direct connections and relay (DERP) node role
         name: 'AllowTailscaleWireGuard'
@@ -159,7 +166,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
     }
     subnets: [
       {
-        name: 'snet-gateway'
+        name: gatewaySubnetName
         properties: {
           addressPrefix: gatewaySubnetPrefix
           networkSecurityGroup: {
@@ -171,7 +178,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         }
       }
       {
-        name: 'snet-default'
+        name: defaultSubnetName
         properties: {
           addressPrefix: defaultSubnetPrefix
           networkSecurityGroup: {
@@ -250,6 +257,6 @@ resource natGatewayPipDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05
 
 output vnetId string = vnet.id
 output vnetName string = vnet.name
-output gatewaySubnetId string = vnet.properties.subnets[0].id
-output defaultSubnetId string = vnet.properties.subnets[1].id
+output gatewaySubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, gatewaySubnetName)
+output defaultSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, defaultSubnetName)
 output natGatewayId string = natGateway.id

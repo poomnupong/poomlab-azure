@@ -21,6 +21,7 @@ param adminUsername string = 'azureuser'
 
 @description('SSH public key for VM access')
 @secure()
+@minLength(1)
 param adminSshPublicKey string
 
 @description('VNET address space')
@@ -37,6 +38,9 @@ param logRetentionDays int = 30
 
 @description('Custom NixOS image resource ID (from nixos-azimage-builder)')
 param nixosImageId string = ''
+
+@description('Source address prefix for SSH access (e.g. your public IP in CIDR notation). Leave empty to omit the SSH rule.')
+param sshSourceAddressPrefix string = ''
 
 @description('Tags applied to all resources')
 param tags object = {
@@ -100,6 +104,7 @@ module networking 'modules/networking/main.bicep' = {
     gatewaySubnetPrefix: gatewaySubnetPrefix
     defaultSubnetPrefix: defaultSubnetPrefix
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
+    sshSourceAddressPrefix: sshSourceAddressPrefix
     tags: tags
   }
 }

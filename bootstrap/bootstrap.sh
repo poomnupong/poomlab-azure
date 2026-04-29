@@ -21,7 +21,7 @@ set -euo pipefail
 # Defaults (override via flags or environment variables)
 # ------------------------------------------------------------------
 SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:-}"
-LOCATION="${AZURE_LOCATION:-eastus2}"
+LOCATION="${AZURE_LOCATION:-southcentralus}"
 PROJECT_NAME="${PROJECT_NAME:-poomlab}"
 GITHUB_ORG="${GITHUB_ORG:-poomnupong}"
 GITHUB_REPO="${GITHUB_REPO:-poomlab-azure}"

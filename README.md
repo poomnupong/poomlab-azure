@@ -94,7 +94,7 @@ az login
 This creates:
 - Entra ID (AAD) app registration with federated credentials for GitHub Actions OIDC
 - Resource groups for monitoring, networking, and compute
-- Sets GitHub repository secrets for the workflow
+- Prints the GitHub Actions values you must add as repository secrets manually
 
 ### 2. Deploy Infrastructure
 
@@ -113,7 +113,7 @@ The GitHub Actions workflow will:
 
 Key parameters are in `infra/environments/poomlab.bicepparam`:
 
-- `location` — Azure region for all resources (default: `eastus2`)
+- `location` — Azure region for all resources (checked-in environment/workflow target: `southcentralus`)
 - `projectName` — Project identifier used in naming (default: `poomlab`)
 - `vmSize` — VM SKU (default: `Standard_D4ads_v7`)
 - `adminUsername` — VM admin user

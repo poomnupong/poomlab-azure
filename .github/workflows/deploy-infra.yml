@@ -58,7 +58,7 @@ jobs:
           az deployment sub what-if \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --template-file infra/main.bicep \
-            --parameters infra/environments/${{ inputs.environment || 'poomlab' }}.bicepparam \
+            --parameters infra/environments/${{ github.event.inputs.environment || 'poomlab' }}.bicepparam \
             --name "whatif-${{ github.run_id }}"
 
   # ------------------------------------------------------------------
@@ -88,7 +88,7 @@ jobs:
           az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --template-file infra/main.bicep \
-            --parameters infra/environments/${{ inputs.environment || 'poomlab' }}.bicepparam \
+            --parameters infra/environments/${{ github.event.inputs.environment || 'poomlab' }}.bicepparam \
             --name "deploy-${{ github.run_id }}"
 
       - name: Show Outputs
