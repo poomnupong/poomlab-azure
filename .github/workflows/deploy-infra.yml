@@ -28,7 +28,7 @@ permissions:
   contents: read
 
 env:
-  DEPLOYMENT_LOCATION: eastus2
+  DEPLOYMENT_LOCATION: southcentralus
 
 jobs:
   # ------------------------------------------------------------------

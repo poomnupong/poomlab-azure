@@ -1,6 +1,6 @@
 using '../main.bicep'
 
-param location = 'eastus2'
+param location = 'southcentralus'
 param projectName = 'poomlab'
 param vmSize = 'Standard_D4ads_v7'
 param adminUsername = 'azureuser'
