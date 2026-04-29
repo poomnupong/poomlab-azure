@@ -18,6 +18,9 @@ param defaultSubnetPrefix string
 @description('Log Analytics workspace resource ID for diagnostics')
 param logAnalyticsWorkspaceId string
 
+@description('Allowed source IP range for SSH access. Restrict to your IP or CIDR block for production use.')
+param sshSourceAddressPrefix string = '*'
+
 @description('Resource tags')
 param tags object
 
@@ -48,7 +51,7 @@ resource nsgGateway 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
           protocol: 'Tcp'
           sourcePortRange: '*'
           destinationPortRange: '22'
-          sourceAddressPrefix: '*'
+          sourceAddressPrefix: sshSourceAddressPrefix
           destinationAddressPrefix: '*'
         }
       }
