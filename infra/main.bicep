@@ -20,7 +20,6 @@ param vmSize string = 'Standard_D4ads_v7'
 param adminUsername string = 'azureuser'
 
 @description('SSH public key for VM access')
-@secure()
 param adminSshPublicKey string
 
 @description('VNET address space')
