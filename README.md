@@ -75,9 +75,10 @@ The flake should reference the `nixos-azimage-builder` repo as an input for the 
 
 ### Prerequisites
 
-- Azure CLI (`az`) installed
-- A target Azure subscription
-- GitHub repository admin access (for OIDC federation setup)
+- Azure CLI (`az`) installed and logged in (`az login`)
+- A target Azure subscription where you have **Owner** or **User Access Administrator** role
+- GitHub repository admin access (for configuring secrets)
+- An SSH public key for VM access
 
 ### 1. Bootstrap Azure Environment
 
@@ -91,12 +92,52 @@ az login
 ./bootstrap/bootstrap.sh
 ```
 
-This creates:
-- Entra ID (AAD) app registration with federated credentials for GitHub Actions OIDC
-- Resource groups for monitoring, networking, and compute
-- Prints the GitHub Actions values you must add as repository secrets manually
+You can override defaults via flags:
 
-### 2. Deploy Infrastructure
+```bash
+./bootstrap/bootstrap.sh \
+  --subscription <subscription-id> \
+  --location <region> \
+  --github-org <org> \
+  --github-repo <repo> \
+  --project <project-name>
+```
+
+Or via environment variables: `AZURE_SUBSCRIPTION_ID`, `AZURE_LOCATION`, `GITHUB_ORG`, `GITHUB_REPO`, `PROJECT_NAME`.
+
+The script creates:
+- Entra ID (AAD) app registration (`<project>-github-oidc`)
+- Service principal with **Contributor** role on the subscription
+- Federated credentials for OIDC (main branch, pull requests, and `production` environment)
+- Resource groups for monitoring, networking, and compute
+
+At the end, it prints the values you need for the next step.
+
+### 2. Configure GitHub Actions Secrets
+
+After running the bootstrap script, you must add the following **repository secrets** in GitHub so the workflow can authenticate to Azure via OIDC.
+
+Go to **Settings → Secrets and variables → Actions → Secrets** (or use the `gh` CLI) and create:
+
+| Secret Name              | Value                                      | Source                          |
+|--------------------------|--------------------------------------------|---------------------------------|
+| `AZURE_CLIENT_ID`       | Application (client) ID of the app registration | Printed by bootstrap script     |
+| `AZURE_TENANT_ID`       | Azure AD tenant ID                         | Printed by bootstrap script     |
+| `AZURE_SUBSCRIPTION_ID` | Target Azure subscription ID               | Printed by bootstrap script     |
+| `ADMIN_SSH_PUBLIC_KEY`   | Your SSH public key (e.g. contents of `~/.ssh/id_ed25519.pub`) | Your local machine |
+
+Using the GitHub CLI:
+
+```bash
+gh secret set AZURE_CLIENT_ID --body "<value from bootstrap output>"
+gh secret set AZURE_TENANT_ID --body "<value from bootstrap output>"
+gh secret set AZURE_SUBSCRIPTION_ID --body "<value from bootstrap output>"
+gh secret set ADMIN_SSH_PUBLIC_KEY --body "$(cat ~/.ssh/id_ed25519.pub)"
+```
+
+> **Note:** The workflow also requires a GitHub **environment** named `production` for the deploy job. Create it under **Settings → Environments → New environment** and name it `production`. You can optionally add protection rules (e.g., required reviewers) to gate deployments.
+
+### 3. Deploy Infrastructure
 
 Push to `main` branch or manually trigger the workflow:
 
@@ -104,10 +145,11 @@ Push to `main` branch or manually trigger the workflow:
 git push origin main
 ```
 
-The GitHub Actions workflow will:
-1. Authenticate via OIDC (no secrets stored)
-2. Run `what-if` preview
-3. Deploy Bicep templates
+The GitHub Actions workflow (`deploy-infra`) will:
+1. Authenticate to Azure via OIDC (no long-lived secrets)
+2. Validate the Bicep templates
+3. Run `what-if` preview showing planned changes
+4. Deploy Bicep templates (only on push to `main` or manual dispatch)
 
 ## Configuration
 
