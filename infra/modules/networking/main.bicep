@@ -55,6 +55,7 @@ resource nsgGateway 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
         }
       }
       {
+        // Open to all sources — required for Tailscale direct connections and relay (DERP) node role
         name: 'AllowTailscaleWireGuard'
         properties: {
           priority: 1010
@@ -68,6 +69,7 @@ resource nsgGateway 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
         }
       }
       {
+        // STUN discovery — needed for NAT traversal when acting as relay/exit node
         name: 'AllowTailscaleSTUN'
         properties: {
           priority: 1020
