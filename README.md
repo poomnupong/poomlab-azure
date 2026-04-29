@@ -44,8 +44,9 @@ Examples:
 A single VNET (`vnet-poomlab-hub`) is deployed initially. This VNET is designed to become a **hub VNET** if the topology expands (hub-spoke model). The NixOS gateway VM sits in this hub and can act as a network virtual appliance (NVA) for routing between spokes.
 
 Subnets:
-- `snet-gateway` — For the NixOS gateway/NVA VM (10.0.0.0/24)
-- `snet-default` — General purpose (10.0.1.0/24)
+- `snet-gateway` — For the NixOS gateway/NVA VM (192.168.85.0/26, 62 hosts)
+- `snet-default` — General purpose (192.168.85.64/26, 62 hosts)
+- Remaining space: 192.168.85.128/25 reserved for future subnets
 
 ### NixOS VM & Flake Hierarchy
 

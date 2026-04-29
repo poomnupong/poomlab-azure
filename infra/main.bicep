@@ -24,13 +24,13 @@ param adminUsername string = 'azureuser'
 param adminSshPublicKey string
 
 @description('VNET address space')
-param vnetAddressPrefix string = '10.0.0.0/16'
+param vnetAddressPrefix string = '192.168.85.0/24'
 
 @description('Gateway subnet address prefix')
-param gatewaySubnetPrefix string = '10.0.0.0/24'
+param gatewaySubnetPrefix string = '192.168.85.0/26'
 
 @description('Default subnet address prefix')
-param defaultSubnetPrefix string = '10.0.1.0/24'
+param defaultSubnetPrefix string = '192.168.85.64/26'
 
 @description('Allowed source IP for SSH access. Default allows all — restrict for production.')
 param sshSourceAddressPrefix string = '*'
