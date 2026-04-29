@@ -22,7 +22,6 @@ param adminUsername string = 'azureuser'
 @description('SSH public key for VM access')
 @secure()
 @minLength(1)
-@minLength(1)
 param adminSshPublicKey string
 
 @description('VNET address space')
