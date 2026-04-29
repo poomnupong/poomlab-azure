@@ -32,10 +32,10 @@ param tags object
 // Variables
 // =====================================================================
 
-var vmName = 'vm-${projectName}-nixgw-${location}'
-var nicName = 'nic-${projectName}-nixgw-${location}'
-var pipName = 'pip-${projectName}-nixgw-${location}'
-var osDiskName = 'osdisk-${projectName}-nixgw-${location}'
+var vmName = 'vm-${projectName}-gw1-${location}'
+var nicName = 'nic-${projectName}-gw1-${location}'
+var pipName = 'pip-${projectName}-gw1-${location}'
+var osDiskName = 'osdisk-${projectName}-gw1-${location}'
 
 // Use custom NixOS image if provided, otherwise fall back to Ubuntu
 var useCustomImage = !empty(nixosImageId)
@@ -101,7 +101,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
       vmSize: vmSize
     }
     osProfile: {
-      computerName: 'nixgw'
+      computerName: 'gw1'
       adminUsername: adminUsername
       linuxConfiguration: {
         disablePasswordAuthentication: true

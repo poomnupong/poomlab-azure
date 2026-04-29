@@ -18,9 +18,6 @@ param defaultSubnetPrefix string
 @description('Log Analytics workspace resource ID for diagnostics')
 param logAnalyticsWorkspaceId string
 
-@description('Allowed source IP range for SSH access. Restrict to your IP or CIDR block for production use.')
-param sshSourceAddressPrefix string = '*'
-
 @description('Resource tags')
 param tags object
 
@@ -45,7 +42,7 @@ resource nsgGateway 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
   properties: {
     securityRules: [
       {
-        name: 'AllowSSH'
+        name: 'AllowSSHFromHome'
         properties: {
           priority: 1000
           direction: 'Inbound'
@@ -53,12 +50,12 @@ resource nsgGateway 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
           protocol: 'Tcp'
           sourcePortRange: '*'
           destinationPortRange: '22'
-          sourceAddressPrefix: sshSourceAddressPrefix
+          sourceAddressPrefix: '99.7.231.75/32'
           destinationAddressPrefix: '*'
         }
       }
       {
-        name: 'AllowTailscaleUDP'
+        name: 'AllowTailscaleWireGuard'
         properties: {
           priority: 1010
           direction: 'Inbound'
@@ -66,6 +63,32 @@ resource nsgGateway 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
           protocol: 'Udp'
           sourcePortRange: '*'
           destinationPortRange: '41641'
+          sourceAddressPrefix: '*'
+          destinationAddressPrefix: '*'
+        }
+      }
+      {
+        name: 'AllowTailscaleSTUN'
+        properties: {
+          priority: 1020
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Udp'
+          sourcePortRange: '*'
+          destinationPortRange: '3478'
+          sourceAddressPrefix: '*'
+          destinationAddressPrefix: '*'
+        }
+      }
+      {
+        name: 'DenyAllInbound'
+        properties: {
+          priority: 4096
+          direction: 'Inbound'
+          access: 'Deny'
+          protocol: '*'
+          sourcePortRange: '*'
+          destinationPortRange: '*'
           sourceAddressPrefix: '*'
           destinationAddressPrefix: '*'
         }

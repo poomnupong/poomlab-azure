@@ -32,9 +32,6 @@ param gatewaySubnetPrefix string = '192.168.85.0/28'
 @description('Default subnet address prefix')
 param defaultSubnetPrefix string = '192.168.85.16/28'
 
-@description('Allowed source IP for SSH access. Default allows all — restrict for production.')
-param sshSourceAddressPrefix string = '*'
-
 @description('Log Analytics workspace retention in days')
 param logRetentionDays int = 30
 
@@ -103,7 +100,6 @@ module networking 'modules/networking/main.bicep' = {
     gatewaySubnetPrefix: gatewaySubnetPrefix
     defaultSubnetPrefix: defaultSubnetPrefix
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
-    sshSourceAddressPrefix: sshSourceAddressPrefix
     tags: tags
   }
 }

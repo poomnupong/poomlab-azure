@@ -34,9 +34,9 @@ Follows [Azure CAF naming convention](https://learn.microsoft.com/en-us/azure/cl
 Examples:
 - `rg-poomlab-network-eastus2` — networking resource group
 - `vnet-poomlab-hub-eastus2` — hub VNET
-- `vm-poomlab-nixgw-eastus2` — NixOS gateway VM
-- `pip-poomlab-nixgw-eastus2` — public IP for gateway VM
-- `nsg-poomlab-nixgw-eastus2` — NSG for gateway VM
+- `vm-poomlab-gw1-eastus2` — gateway VM
+- `pip-poomlab-gw1-eastus2` — public IP for gateway VM
+- `nsg-poomlab-gateway-eastus2` — NSG for gateway subnet
 - `log-poomlab-main-eastus2` — Log Analytics workspace
 
 ### Network Design
@@ -58,7 +58,7 @@ nixos-config/
 ├── flake.nix              # Top-level flake
 ├── flake.lock
 ├── hosts/
-│   └── nixgw/
+│   └── gw1/
 │       ├── default.nix    # Host-specific config (hostname, networking, tailscale)
 │       └── hardware.nix   # Azure-specific hardware config
 ├── modules/
