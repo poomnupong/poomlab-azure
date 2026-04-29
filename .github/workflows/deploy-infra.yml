@@ -52,6 +52,8 @@ jobs:
         run: az bicep build --file infra/main.bicep
 
       - name: What-If
+        env:
+          ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
         run: |
           az deployment sub what-if \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
@@ -80,6 +82,8 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy Infrastructure
+        env:
+          ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
         run: |
           az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
