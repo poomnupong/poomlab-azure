@@ -104,8 +104,13 @@ jobs:
           # ── Latest release from nixos-azimage-builder ─────────────────
           RELEASE_JSON=$(gh api repos/poomnupong/nixos-azimage-builder/releases/latest)
           RELEASE_TAG=$(echo "$RELEASE_JSON"  | jq -r '.tag_name')
-          ASSET_NAME=$(echo "$RELEASE_JSON"   | jq -r '.assets[0].name')
-          ASSET_URL=$(echo "$RELEASE_JSON"    | jq -r '.assets[0].browser_download_url')
+          ASSET_NAME=$(echo "$RELEASE_JSON"   | jq -r '[.assets[] | select(.name | endswith(".vhd.gz"))][0].name // ""')
+          ASSET_URL=$(echo "$RELEASE_JSON"    | jq -r '[.assets[] | select(.name | endswith(".vhd.gz"))][0].browser_download_url // ""')
+
+          if [ -z "$ASSET_NAME" ] || [ -z "$ASSET_URL" ] || [[ "$ASSET_NAME" != *.vhd.gz ]]; then
+            echo "Expected a release asset ending with .vhd.gz, but none was found."
+            exit 1
+          fi
 
           # Convert tag (e.g. nixos-25.11-20260429-2017) to gallery
           # version format Major.Minor.Patch → 2511.20260429.2017
