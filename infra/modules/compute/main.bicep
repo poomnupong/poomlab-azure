@@ -129,8 +129,8 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
       } : {
         // Fallback to Ubuntu 24.04 LTS until NixOS custom image is available
         publisher: 'Canonical'
-        offer: '0001-com-ubuntu-server-noble'
-        sku: '24_04-lts-gen2'
+        offer: 'ubuntu-24_04-lts'
+        sku: 'server'
         version: 'latest'
       }
     }
