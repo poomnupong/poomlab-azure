@@ -36,7 +36,7 @@ param defaultSubnetPrefix string = '192.168.85.16/28'
 @description('Log Analytics workspace retention in days')
 param logRetentionDays int = 30
 
-@description('Custom NixOS image resource ID (from nixos-azimage-builder)')
+@description('Custom NixOS image resource ID (gallery image version from nixos-azimage-builder).  When empty the VM is not deployed — the stage-image workflow job populates this automatically.')
 param nixosImageId string = ''
 
 @description('Source address prefix for SSH access (e.g. your public IP in CIDR notation). Leave empty to omit the SSH rule.')
@@ -56,6 +56,7 @@ param tags object = {
 var rgMonitoringName = 'rg-${projectName}-monitoring-${location}'
 var rgNetworkName = 'rg-${projectName}-network-${location}'
 var rgComputeName = 'rg-${projectName}-compute-${location}'
+var rgGalleryName = 'rg-${projectName}-gallery-${location}'
 
 // =====================================================================
 // Resource Groups
@@ -79,6 +80,12 @@ resource rgCompute 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   tags: tags
 }
 
+resource rgGallery 'Microsoft.Resources/resourceGroups@2024-03-01' = {
+  name: rgGalleryName
+  location: location
+  tags: tags
+}
+
 // =====================================================================
 // Module Deployments
 // =====================================================================
@@ -90,6 +97,16 @@ module monitoring 'modules/monitoring/main.bicep' = {
     location: location
     projectName: projectName
     logRetentionDays: logRetentionDays
+    tags: tags
+  }
+}
+
+module gallery 'modules/gallery/main.bicep' = {
+  name: 'gallery-deployment'
+  scope: rgGallery
+  params: {
+    location: location
+    projectName: projectName
     tags: tags
   }
 }
@@ -132,7 +149,10 @@ module compute 'modules/compute/main.bicep' = {
 output monitoringResourceGroup string = rgMonitoringName
 output networkResourceGroup string = rgNetworkName
 output computeResourceGroup string = rgComputeName
+output galleryResourceGroup string = rgGalleryName
 output logAnalyticsWorkspaceId string = monitoring.outputs.logAnalyticsWorkspaceId
 output vnetId string = networking.outputs.vnetId
+output galleryName string = gallery.outputs.galleryName
+output imageDefinitionName string = gallery.outputs.imageDefinitionName
 output vmPublicIp string = compute.outputs.publicIpAddress
 output vmName string = compute.outputs.vmName

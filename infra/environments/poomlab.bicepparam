@@ -11,7 +11,6 @@ param defaultSubnetPrefix = '192.168.85.16/28'
 param logRetentionDays = 30
 param sshSourceAddressPrefix = '99.7.231.75/32'
 
-// Set this to the resource ID of your custom NixOS image from nixos-azimage-builder
-// Example: '/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Compute/images/<name>'
-// Leave empty to use Ubuntu 24.04 LTS as fallback
-param nixosImageId = ''
+// NixOS image version resource ID — provided by the stage-image workflow job.
+// Falls back to empty string for validation-only runs (VM will not be deployed).
+param nixosImageId = readEnvironmentVariable('NIXOS_IMAGE_ID', '')

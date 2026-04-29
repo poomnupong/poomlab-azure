@@ -1,7 +1,8 @@
 # Azure Infrastructure Deployment
 #
 # Deploys poomlab infrastructure to Azure using Bicep via OIDC authentication.
-# Triggers on push to main and pull requests.
+# Downloads the latest NixOS VHD from nixos-azimage-builder, stages it in an
+# Azure Compute Gallery, and deploys the VM from the gallery image version.
 
 name: deploy-infra
 
@@ -29,14 +30,35 @@ permissions:
 
 env:
   DEPLOYMENT_LOCATION: southcentralus
+  PROJECT_NAME: poomlab
 
 jobs:
   # ------------------------------------------------------------------
-  # Validate & What-If (runs on all triggers)
+  # Validate (runs on all triggers)
   # ------------------------------------------------------------------
   validate:
-    name: Validate & What-If
+    name: Validate Bicep
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate main template
+        run: az bicep build --file infra/main.bicep
+
+      - name: Validate gallery template
+        run: az bicep build --file infra/gallery.bicep
+
+  # ------------------------------------------------------------------
+  # Stage NixOS Image (only on push to main or manual dispatch)
+  # ------------------------------------------------------------------
+  stage-image:
+    name: Stage NixOS Image
+    needs: validate
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      imageVersionId: ${{ steps.stage.outputs.imageVersionId }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,25 +70,154 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Validate Bicep
-        run: az bicep build --file infra/main.bicep
-
-      - name: What-If
-        env:
-          ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+      - name: Deploy Gallery Infrastructure
         run: |
-          az deployment sub what-if \
+          az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
-            --template-file infra/main.bicep \
-            --parameters infra/environments/${{ github.event.inputs.environment || 'poomlab' }}.bicepparam \
-            --name "whatif-${{ github.run_id }}"
+            --template-file infra/gallery.bicep \
+            --parameters location="${{ env.DEPLOYMENT_LOCATION }}" \
+                         projectName="${{ env.PROJECT_NAME }}" \
+            --name "gallery-${{ github.run_id }}"
+
+      - name: Stage NixOS Image Version
+        id: stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          LOCATION="${{ env.DEPLOYMENT_LOCATION }}"
+
+          # ── Gallery info from deployment outputs ──────────────────────
+          GALLERY_RG=$(az deployment sub show \
+            --name "gallery-${{ github.run_id }}" \
+            --query 'properties.outputs.galleryResourceGroup.value' -o tsv)
+          GALLERY_NAME=$(az deployment sub show \
+            --name "gallery-${{ github.run_id }}" \
+            --query 'properties.outputs.galleryName.value' -o tsv)
+          IMAGE_DEF=$(az deployment sub show \
+            --name "gallery-${{ github.run_id }}" \
+            --query 'properties.outputs.imageDefinitionName.value' -o tsv)
+
+          echo "Gallery RG:  $GALLERY_RG"
+          echo "Gallery:     $GALLERY_NAME"
+          echo "Image Def:   $IMAGE_DEF"
+
+          # ── Latest release from nixos-azimage-builder ─────────────────
+          RELEASE_JSON=$(gh api repos/poomnupong/nixos-azimage-builder/releases/latest)
+          RELEASE_TAG=$(echo "$RELEASE_JSON"  | jq -r '.tag_name')
+          ASSET_NAME=$(echo "$RELEASE_JSON"   | jq -r '[.assets[] | select(.name | endswith(".vhd.gz"))][0].name // ""')
+          ASSET_URL=$(echo "$RELEASE_JSON"    | jq -r '[.assets[] | select(.name | endswith(".vhd.gz"))][0].browser_download_url // ""')
+
+          if [ -z "$ASSET_NAME" ] || [ -z "$ASSET_URL" ] || [[ "$ASSET_NAME" != *.vhd.gz ]]; then
+            echo "Expected a release asset ending with .vhd.gz, but none was found."
+            exit 1
+          fi
+
+          # Convert tag (e.g. nixos-25.11-20260429-2017) to gallery
+          # version format Major.Minor.Patch → 2511.20260429.2017
+          VERSION=$(echo "$RELEASE_TAG" | sed -E 's/^nixos-([0-9]+)\.([0-9]+)-([0-9]{8})-([0-9]{4})$/\1\2.\3.\4/')
+
+          # Validate that VERSION matches the required Major.Minor.Patch format
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Release tag '$RELEASE_TAG' did not convert to a valid gallery image version (got '$VERSION'). Expected format: Major.Minor.Patch"
+            exit 1
+          fi
+
+          echo "Release tag: $RELEASE_TAG"
+          echo "Version:     $VERSION"
+          echo "Asset:       $ASSET_NAME"
+
+          # ── Check if this version already exists ──────────────────────
+          EXISTING=$(az sig image-version show \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            --gallery-image-version "$VERSION" \
+            --query id -o tsv 2>/dev/null || true)
+
+          if [ -n "$EXISTING" ]; then
+            echo "✅ Image version $VERSION already exists"
+            echo "imageVersionId=$EXISTING" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ── Download VHD ──────────────────────────────────────────────
+          echo "⬇️  Downloading $ASSET_NAME …"
+          curl -fSL -o "$ASSET_NAME" "$ASSET_URL"
+
+          echo "📦 Decompressing …"
+          VHD_FILE="${ASSET_NAME%.gz}"
+          gunzip "$ASSET_NAME"
+
+          VHD_SIZE=$(stat -c %s "$VHD_FILE")
+          echo "VHD size: $VHD_SIZE bytes"
+
+          # ── Create managed disk via direct upload ─────────────────────
+          DISK_NAME="nixos-staging-$(echo "$RELEASE_TAG" | tr '.' '-')"
+          echo "💾 Creating managed disk $DISK_NAME …"
+          DISK_ID=$(az disk create \
+            --resource-group "$GALLERY_RG" \
+            --name "$DISK_NAME" \
+            --location "$LOCATION" \
+            --upload-type Upload \
+            --upload-size-bytes "$VHD_SIZE" \
+            --hyper-v-generation V2 \
+            --os-type Linux \
+            --query id -o tsv)
+
+          echo "🔑 Getting write SAS …"
+          SAS=$(az disk grant-access \
+            --resource-group "$GALLERY_RG" \
+            --name "$DISK_NAME" \
+            --access-level Write \
+            --duration-in-seconds 3600 \
+            --query accessSAS -o tsv)
+
+          echo "⬆️  Uploading VHD …"
+          azcopy copy "$VHD_FILE" "$SAS" --blob-type PageBlob
+
+          echo "🔒 Revoking disk access …"
+          az disk revoke-access \
+            --resource-group "$GALLERY_RG" \
+            --name "$DISK_NAME"
+
+          # ── Stamp NVMe + SCSI support on the staging disk ────────────
+          # The image definition declares DiskControllerTypes but the
+          # *source disk* must also carry the capability for the gallery
+          # image version to inherit it (Azure requirement).
+          echo "🏷️  Stamping disk controller support …"
+          az rest --method PATCH \
+            --url "${DISK_ID}?api-version=2024-03-02" \
+            --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
+
+          # ── Create gallery image version ──────────────────────────────
+          echo "🖼️  Creating image version $VERSION …"
+          IMAGE_VERSION_ID=$(az sig image-version create \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            --gallery-image-version "$VERSION" \
+            --location "$LOCATION" \
+            --os-snapshot "$DISK_ID" \
+            --query id -o tsv)
+
+          echo "✅ Image version created: $IMAGE_VERSION_ID"
+          echo "imageVersionId=$IMAGE_VERSION_ID" >> "$GITHUB_OUTPUT"
+
+          # ── Cleanup staging disk ──────────────────────────────────────
+          echo "🧹 Deleting staging disk …"
+          az disk delete \
+            --resource-group "$GALLERY_RG" \
+            --name "$DISK_NAME" \
+            --yes --no-wait
 
   # ------------------------------------------------------------------
   # Deploy (only on push to main or manual dispatch)
   # ------------------------------------------------------------------
   deploy:
     name: Deploy
-    needs: validate
+    needs: [validate, stage-image]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: production
@@ -84,6 +235,7 @@ jobs:
       - name: Deploy Infrastructure
         env:
           ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+          NIXOS_IMAGE_ID: ${{ needs.stage-image.outputs.imageVersionId }}
         run: |
           az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
