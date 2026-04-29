@@ -18,7 +18,8 @@ param tags object
 // =====================================================================
 
 // Gallery names allow only alphanumerics, underscores, and dots.
-var galleryName = 'gal_${projectName}'
+var sanitizedProjectName = replace(projectName, '-', '_')
+var galleryName = 'gal_${sanitizedProjectName}'
 var imageDefinitionName = 'nixos-azimage'
 
 // =====================================================================
