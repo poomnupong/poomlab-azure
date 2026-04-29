@@ -27,10 +27,10 @@ param adminSshPublicKey string
 param vnetAddressPrefix string = '192.168.85.0/24'
 
 @description('Gateway subnet address prefix')
-param gatewaySubnetPrefix string = '192.168.85.0/26'
+param gatewaySubnetPrefix string = '192.168.85.0/28'
 
 @description('Default subnet address prefix')
-param defaultSubnetPrefix string = '192.168.85.64/26'
+param defaultSubnetPrefix string = '192.168.85.16/28'
 
 @description('Allowed source IP for SSH access. Default allows all — restrict for production.')
 param sshSourceAddressPrefix string = '*'

@@ -31,6 +31,8 @@ param tags object
 var vnetName = 'vnet-${projectName}-hub-${location}'
 var nsgGatewayName = 'nsg-${projectName}-gateway-${location}'
 var nsgDefaultName = 'nsg-${projectName}-default-${location}'
+var natGatewayName = 'natgw-${projectName}-hub-${location}'
+var natGatewayPipName = 'pip-${projectName}-natgw-${location}'
 
 // =====================================================================
 // Network Security Groups
@@ -82,6 +84,41 @@ resource nsgDefault 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
 }
 
 // =====================================================================
+// NAT Gateway
+// =====================================================================
+
+resource natGatewayPip 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
+  name: natGatewayPipName
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard'
+    tier: 'Regional'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+    publicIPAddressVersion: 'IPv4'
+  }
+}
+
+resource natGateway 'Microsoft.Network/natGateways@2024-01-01' = {
+  name: natGatewayName
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    idleTimeoutInMinutes: 4
+    publicIpAddresses: [
+      {
+        id: natGatewayPip.id
+      }
+    ]
+  }
+}
+
+// =====================================================================
 // Virtual Network
 // =====================================================================
 
@@ -103,6 +140,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           networkSecurityGroup: {
             id: nsgGateway.id
           }
+          natGateway: {
+            id: natGateway.id
+          }
         }
       }
       {
@@ -111,6 +151,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           addressPrefix: defaultSubnetPrefix
           networkSecurityGroup: {
             id: nsgDefault.id
+          }
+          natGateway: {
+            id: natGateway.id
           }
         }
       }
@@ -156,6 +199,26 @@ resource nsgGatewayDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01
   }
 }
 
+resource natGatewayPipDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: '${natGatewayPipName}-diag'
+  scope: natGatewayPip
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      {
+        categoryGroup: 'allLogs'
+        enabled: true
+      }
+    ]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
+      }
+    ]
+  }
+}
+
 // =====================================================================
 // Outputs
 // =====================================================================
@@ -164,3 +227,4 @@ output vnetId string = vnet.id
 output vnetName string = vnet.name
 output gatewaySubnetId string = vnet.properties.subnets[0].id
 output defaultSubnetId string = vnet.properties.subnets[1].id
+output natGatewayId string = natGateway.id
