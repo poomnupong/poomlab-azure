@@ -1,0 +1,99 @@
+# Azure Infrastructure Deployment
+#
+# Deploys poomlab infrastructure to Azure using Bicep via OIDC authentication.
+# Triggers on push to main and pull requests.
+
+name: deploy-infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/deploy-infra.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/deploy-infra.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Parameter file to use (without extension)'
+        required: true
+        default: 'poomlab'
+
+permissions:
+  id-token: write   # Required for OIDC
+  contents: read
+
+env:
+  DEPLOYMENT_LOCATION: eastus2
+
+jobs:
+  # ------------------------------------------------------------------
+  # Validate & What-If (runs on all triggers)
+  # ------------------------------------------------------------------
+  validate:
+    name: Validate & What-If
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Validate Bicep
+        run: az bicep build --file infra/main.bicep
+
+      - name: What-If
+        env:
+          ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+        run: |
+          az deployment sub what-if \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file infra/main.bicep \
+            --parameters infra/environments/${{ inputs.environment || 'poomlab' }}.bicepparam \
+            --name "whatif-${{ github.run_id }}"
+
+  # ------------------------------------------------------------------
+  # Deploy (only on push to main or manual dispatch)
+  # ------------------------------------------------------------------
+  deploy:
+    name: Deploy
+    needs: validate
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Infrastructure
+        env:
+          ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+        run: |
+          az deployment sub create \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file infra/main.bicep \
+            --parameters infra/environments/${{ inputs.environment || 'poomlab' }}.bicepparam \
+            --name "deploy-${{ github.run_id }}"
+
+      - name: Show Outputs
+        run: |
+          az deployment sub show \
+            --name "deploy-${{ github.run_id }}" \
+            --query properties.outputs \
+            --output table
