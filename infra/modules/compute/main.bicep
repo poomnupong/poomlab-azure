@@ -38,7 +38,7 @@ var pipName = 'pip-${projectName}-gw1-${location}'
 var osDiskName = 'osdisk-${projectName}-gw1-${location}'
 
 // Deploy the VM only when a NixOS image version has been staged
-var deployVm = !empty(trim(nixosImageId))
+var hasImageVersion = !empty(trim(nixosImageId))
 
 // =====================================================================
 // Public IP
@@ -89,7 +89,7 @@ resource nic 'Microsoft.Network/networkInterfaces@2024-01-01' = {
 // Virtual Machine
 // =====================================================================
 
-resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = if (deployVm) {
+resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = if (hasImageVersion) {
   name: vmName
   location: location
   tags: union(tags, {
@@ -188,7 +188,7 @@ resource pipDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previe
 // Outputs
 // =====================================================================
 
-output vmName string = deployVm ? vm.name : ''
-output vmId string = deployVm ? vm.id : ''
+output vmName string = hasImageVersion ? vm.name : ''
+output vmId string = hasImageVersion ? vm.id : ''
 output publicIpAddress string = publicIp.properties.ipAddress
 output nicId string = nic.id

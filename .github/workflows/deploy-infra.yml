@@ -108,8 +108,8 @@ jobs:
           ASSET_URL=$(echo "$RELEASE_JSON"    | jq -r '.assets[0].browser_download_url')
 
           # Convert tag (e.g. nixos-25.11-20260429-2017) to gallery
-          # version format Major.Minor.Patch → 25.20260429.2017
-          VERSION=$(echo "$RELEASE_TAG" | sed -E 's/^nixos-[0-9]+\.([0-9]+)-([0-9]{8})-([0-9]{4})$/\1.\2.\3/')
+          # version format Major.Minor.Patch → 2511.20260429.2017
+          VERSION=$(echo "$RELEASE_TAG" | sed -E 's/^nixos-([0-9]+)\.([0-9]+)-([0-9]{8})-([0-9]{4})$/\1\2.\3.\4/')
 
           echo "Release tag: $RELEASE_TAG"
           echo "Version:     $VERSION"
@@ -169,7 +169,10 @@ jobs:
             --resource-group "$GALLERY_RG" \
             --name "$DISK_NAME"
 
-          # ── Stamp NVMe + SCSI support ─────────────────────────────────
+          # ── Stamp NVMe + SCSI support on the staging disk ────────────
+          # The image definition declares DiskControllerTypes but the
+          # *source disk* must also carry the capability for the gallery
+          # image version to inherit it (Azure requirement).
           echo "🏷️  Stamping disk controller support …"
           az rest --method PATCH \
             --url "${DISK_ID}?api-version=2024-03-02" \
