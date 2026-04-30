@@ -1,0 +1,126 @@
+# NixOS Configuration Deployment
+#
+# Deploys the NixOS configuration in nixos/ to live VMs using Colmena.
+# Triggers only on push to main when nixos/** paths change, or on manual dispatch.
+# A validate job runs first — deploy only proceeds if validation passes.
+#
+# Required secrets (same OIDC set as deploy-infra):
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#   ADMIN_SSH_PUBLIC_KEY — NOTE: this secret currently holds the SSH *public* key.
+#   For Colmena to SSH into VMs it needs the corresponding *private* key.
+#   If you create a separate private-key secret (e.g. NIXOS_DEPLOY_SSH_KEY),
+#   replace ADMIN_SSH_PUBLIC_KEY below with that secret name.
+
+name: deploy-nixos
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'nixos/**'
+      - '.github/workflows/deploy-nixos.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # Required for OIDC
+  contents: read
+
+env:
+  DEPLOYMENT_LOCATION: southcentralus
+  PROJECT_NAME: plaz
+
+jobs:
+  # ------------------------------------------------------------------
+  # Validate NixOS flake
+  # ------------------------------------------------------------------
+  validate:
+    name: Validate NixOS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Check NixOS flake
+        run: nix flake check ./nixos
+
+  # ------------------------------------------------------------------
+  # Deploy NixOS config via Colmena
+  # ------------------------------------------------------------------
+  deploy:
+    name: Deploy NixOS
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve VM public IP
+        id: vm-ip
+        run: |
+          set -euo pipefail
+          # Resolve the public IP of the gw1 VM from the Bicep deployment outputs
+          VM_IP=$(az deployment sub show \
+            --name "deploy-infra" \
+            --query 'properties.outputs.vmPublicIp.value' -o tsv 2>/dev/null || true)
+
+          # Fall back to querying the public IP resource directly if output not found
+          if [ -z "${VM_IP:-}" ]; then
+            VM_IP=$(az network public-ip show \
+              --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
+              --name "pip-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
+              --query ipAddress -o tsv 2>/dev/null || true)
+          fi
+
+          if [ -z "${VM_IP:-}" ]; then
+            echo "::error::Could not resolve public IP for gw1 VM"
+            exit 1
+          fi
+
+          echo "VM public IP: $VM_IP"
+          echo "vm_ip=$VM_IP" >> "$GITHUB_OUTPUT"
+
+      # NOTE: ADMIN_SSH_PUBLIC_KEY holds the SSH *public* key.
+      # Colmena requires a *private* key to SSH into hosts.
+      # Replace ADMIN_SSH_PUBLIC_KEY with a private-key secret (e.g. NIXOS_DEPLOY_SSH_KEY)
+      # once you have one configured, or ensure the private key matching
+      # ADMIN_SSH_PUBLIC_KEY is available here.
+      - name: Load SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+
+      - name: Install Colmena
+        run: nix profile install nixpkgs#colmena
+
+      - name: Deploy with Colmena
+        env:
+          VM_IP: ${{ steps.vm-ip.outputs.vm_ip }}
+        run: |
+          set -euo pipefail
+          # Add host key to known_hosts to avoid interactive prompt
+          ssh-keyscan -H "$VM_IP" >> ~/.ssh/known_hosts
+
+          # Override the gw1 target IP with the live Azure IP via Colmena's
+          # --override-hostname flag so the flake doesn't need a hard-coded IP.
+          cd nixos
+          colmena apply \
+            --on gw1 \
+            --override-hostname "$VM_IP"

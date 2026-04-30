@@ -1,0 +1,109 @@
+# PR Validation Gate
+#
+# Runs on every pull request targeting main. Uses path filtering to run only
+# the checks relevant to the paths that changed:
+#   - infra filter: Bicep lint + az deployment what-if (subscription-scoped)
+#   - nixos filter: nix flake check
+#
+# These jobs are intended to be configured as required status checks in branch
+# protection so that nothing can merge to main without passing validation.
+# This workflow NEVER deploys anything.
+
+name: ci-pr
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write   # Required for OIDC (what-if step)
+  contents: read
+  pull-requests: read
+
+env:
+  DEPLOYMENT_LOCATION: southcentralus
+  PROJECT_NAME: plaz
+
+jobs:
+  # ------------------------------------------------------------------
+  # Detect which paths changed
+  # ------------------------------------------------------------------
+  filter:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      infra: ${{ steps.paths.outputs.infra }}
+      nixos: ${{ steps.paths.outputs.nixos }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: paths
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            infra:
+              - 'infra/**'
+              - '.github/workflows/**'
+            nixos:
+              - 'nixos/**'
+
+  # ------------------------------------------------------------------
+  # Validate Bicep (runs only if infra paths changed)
+  # ------------------------------------------------------------------
+  validate-infra:
+    name: Validate Bicep
+    needs: filter
+    if: needs.filter.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint main template
+        run: az bicep build --file infra/main.bicep
+
+      - name: Lint gallery template
+        run: az bicep build --file infra/gallery.bicep
+
+      # Azure login is only possible on PRs from the same repo (not forks),
+      # because OIDC federated credentials are scoped to this repository.
+      - name: Azure Login (OIDC)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: What-if preview (main template)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+        run: |
+          az deployment sub what-if \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file infra/main.bicep \
+            --parameters infra/environments/plaz.bicepparam \
+            --name "whatif-${{ github.run_id }}"
+
+  # ------------------------------------------------------------------
+  # Validate NixOS flake (runs only if nixos paths changed)
+  # ------------------------------------------------------------------
+  validate-nixos:
+    name: Validate NixOS
+    needs: filter
+    if: needs.filter.outputs.nixos == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Check NixOS flake
+        run: nix flake check ./nixos

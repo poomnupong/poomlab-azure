@@ -1,0 +1,3 @@
+# Ignore Nix build result symlinks
+result
+result-*
