@@ -12,11 +12,6 @@ on:
     paths:
       - 'infra/**'
       - '.github/workflows/deploy-infra.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'infra/**'
-      - '.github/workflows/deploy-infra.yml'
   workflow_dispatch:
     inputs:
       environment:

@@ -71,6 +71,45 @@ nixos-config/
 
 The flake should reference the `nixos-azimage-builder` repo as an input for the base image configuration, then layer host-specific and role-specific modules on top.
 
+## CI/CD Workflows
+
+Three GitHub Actions workflows manage validation and deployment for this repository:
+
+| Workflow | File | Trigger | Purpose |
+|---|---|---|---|
+| `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | **Validation only — never deploys.** Uses `dorny/paths-filter` to run only the relevant checks: Bicep lint + `az deployment what-if` for `infra/**` changes; `nix flake check` for `nixos/**` changes. These are the required status checks for branch protection. |
+| `deploy-infra` | `.github/workflows/deploy-infra.yml` | Push to `main` on `infra/**`, or `workflow_dispatch` | Stages the NixOS gallery image and deploys Bicep infrastructure. |
+| `deploy-nixos` | `.github/workflows/deploy-nixos.yml` | Push to `main` on `nixos/**`, or `workflow_dispatch` | Uses Azure VM Run Command to nudge each affected VM (per-host path filtering). The VM pulls its own config from this repo using an ephemeral `GITHUB_TOKEN` and runs `nixos-rebuild switch`. No SSH private key required. |
+
+**Key principle:** `ci-pr` acts as the gate — it runs on every PR and must pass before merging. The deploy workflows only fire after a merge to `main`, and only for the paths that actually changed. A PR touching only `nixos/` will not trigger Bicep what-if, and a push affecting only `infra/` will not trigger a NixOS deploy.
+
+## Branch Protection
+
+Branch protection on `main` is strongly recommended to ensure all changes pass validation before reaching production. See [`docs/branch_protection.md`](docs/branch_protection.md) for a complete setup guide, including the required status check names and a GitHub CLI command for scripted configuration.
+
+## NixOS Configuration
+
+NixOS host configurations live under `nixos/` using a **per-VM subfolder pattern** so that adding a new VM is as simple as adding a new folder under `hosts/`. If you see `nixos-config/` elsewhere in this README, treat it as a historical reference; the canonical path and structure is `nixos/` as shown below:
+
+```
+nixos/
+├── flake.nix               # Top-level flake with nixosConfigurations output
+├── flake.lock              # Populated by `nix flake update`
+├── hosts/
+│   └── gw1/
+│       ├── default.nix     # Host-specific config (hostname, networking, firewall)
+│       └── hardware.nix    # Azure Gen2 hardware config (NVMe+SCSI, boot loader, Hyper-V)
+└── modules/
+    ├── base.nix            # Common: users, SSH authorized keys, Nix settings
+    ├── tailscale.nix       # Tailscale VPN module
+    ├── networking.nix      # IP forwarding, routing (NVA role)
+    └── monitoring.nix      # node_exporter for Azure Monitor
+```
+
+Each host under `hosts/<vmname>/` is self-contained — `default.nix` imports the shared modules and adds host-specific overrides. Search for `# TODO` comments in the NixOS files for values you need to fill in (IP addresses, SSH keys, Tailscale auth key, etc.).
+
+The flake uses standard `nixosConfigurations` outputs consumed by `nixos-rebuild switch --flake .#<hostname>`. GitHub Actions nudges each VM via `az vm run-command invoke` — passing an ephemeral `GITHUB_TOKEN` so the VM can pull its config from this private repo — with no SSH private key required.
+
 ## Getting Started
 
 ### Prerequisites
