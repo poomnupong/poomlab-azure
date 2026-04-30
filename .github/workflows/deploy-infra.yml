@@ -202,7 +202,7 @@ jobs:
             --os-snapshot "$DISK_ID" \
             --query id -o tsv)
 
-          echo "✅ Image version created: $IMAGE_VERSION_ID"
+          echo "✅ Image version created: $VERSION"
           echo "imageVersion=$VERSION" >> "$GITHUB_OUTPUT"
 
           # ── Cleanup staging disk ──────────────────────────────────────
@@ -267,14 +267,14 @@ jobs:
             --gallery-name "$GALLERY_NAME" \
             --gallery-image-definition "$IMAGE_DEF" \
             --gallery-image-version "$IMAGE_VERSION" \
-            --query id -o tsv)
+            --query id -o tsv 2>/dev/null || true)
 
           if [ -z "$IMAGE_VERSION_ID" ]; then
             echo "::error::Failed to resolve image version $IMAGE_VERSION — az sig image-version show returned empty"
             exit 1
           fi
 
-          echo "Resolved: $IMAGE_VERSION_ID"
+          echo "Resolved image version: $IMAGE_VERSION"
           echo "NIXOS_IMAGE_ID=$IMAGE_VERSION_ID" >> "$GITHUB_ENV"
 
       - name: Deploy Infrastructure
