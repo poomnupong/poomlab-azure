@@ -26,7 +26,7 @@
     "hv_vmbus"
     "hv_netvsc"
   ];
-  boot.kernelModules = [ "kvm-amd" "hv_balloon" ];
+  boot.kernelModules = [ "hv_balloon" ];
 
   # ── Disk layout ─────────────────────────────────────────────────────
   # TODO: verify disk device names match your image. NVMe-attached OS disk is

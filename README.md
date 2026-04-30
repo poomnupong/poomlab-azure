@@ -89,7 +89,7 @@ Branch protection on `main` is strongly recommended to ensure all changes pass v
 
 ## NixOS Configuration
 
-NixOS host configurations live under `nixos/` using a **per-VM subfolder pattern** so that adding a new VM is as simple as adding a new folder under `hosts/`:
+NixOS host configurations live under `nixos/` using a **per-VM subfolder pattern** so that adding a new VM is as simple as adding a new folder under `hosts/`. If you see `nixos-config/` elsewhere in this README, treat it as a historical reference; the canonical path and structure is `nixos/` as shown below:
 
 ```
 nixos/

@@ -10,9 +10,10 @@
   boot.kernel.sysctl = {
     "net.ipv4.ip_forward" = 1;
     "net.ipv6.conf.all.forwarding" = 1;
-    # Disable reverse path filtering to allow asymmetric routing (NVA pattern)
-    "net.ipv4.conf.all.rp_filter" = 0;
-    "net.ipv4.conf.default.rp_filter" = 0;
+    # Use loose reverse path filtering to allow asymmetric routing (NVA pattern)
+    # while retaining some spoofing protection.
+    "net.ipv4.conf.all.rp_filter" = 2;
+    "net.ipv4.conf.default.rp_filter" = 2;
   };
 
   # ── NAT / masquerade ─────────────────────────────────────────────────

@@ -54,9 +54,11 @@ jobs:
       - name: Check NixOS flake
         run: |
           cd nixos
-          # Generate lock file if not yet present (initial scaffold state)
-          if [ ! -f flake.lock ]; then nix flake update; fi
-          nix flake check .
+          if [ ! -f flake.lock ]; then
+            echo "error: nixos/flake.lock is missing. Commit the lock file and rerun CI."
+            exit 1
+          fi
+          nix flake check . --no-update-lock-file
 
   # ------------------------------------------------------------------
   # Detect which VM configs changed
@@ -78,9 +80,15 @@ jobs:
           filters: |
             gw1:
               - 'nixos/hosts/gw1/**'
+              - 'nixos/modules/**'
+              - 'nixos/flake.nix'
+              - 'nixos/flake.lock'
             # Future VMs: add entries here, e.g.:
             # vm2:
             #   - 'nixos/hosts/vm2/**'
+            #   - 'nixos/modules/**'
+            #   - 'nixos/flake.nix'
+            #   - 'nixos/flake.lock'
 
   # ------------------------------------------------------------------
   # Deploy gw1 via Azure VM Run Command (GitOps pull nudge)
@@ -129,7 +137,7 @@ jobs:
             --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
             --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
             --command-id RunShellScript \
-            --scripts "nixos-rebuild switch --flake \"git+https://x-access-token:\${GITHUB_TOKEN}@github.com/${{ github.repository }}?ref=main#gw1\" 2>&1" \
+            --scripts "export NIX_CONFIG=\"access-tokens = github.com=\${GITHUB_TOKEN}\" && nixos-rebuild switch --flake \"github:${{ github.repository }}#gw1\" 2>&1" \
             --parameters "GITHUB_TOKEN=$GH_TOKEN" \
             --output json)
 

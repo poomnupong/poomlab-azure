@@ -51,27 +51,34 @@ jobs:
               - 'nixos/**'
 
   # ------------------------------------------------------------------
-  # Validate Bicep (runs only if infra paths changed)
+  # Validate Bicep (always runs so it can be a required check;
+  # performs validation only if infra paths changed)
   # ------------------------------------------------------------------
   validate-infra:
     name: Validate Bicep
     needs: filter
-    if: needs.filter.outputs.infra == 'true'
     runs-on: ubuntu-latest
     steps:
+      - name: No infra changes detected
+        if: needs.filter.outputs.infra != 'true'
+        run: echo "No changes under infra/**; skipping Bicep validation."
+
       - name: Checkout
+        if: needs.filter.outputs.infra == 'true'
         uses: actions/checkout@v4
 
       - name: Lint main template
+        if: needs.filter.outputs.infra == 'true'
         run: az bicep build --file infra/main.bicep
 
       - name: Lint gallery template
+        if: needs.filter.outputs.infra == 'true'
         run: az bicep build --file infra/gallery.bicep
 
       # Azure login is only possible on PRs from the same repo (not forks),
       # because OIDC federated credentials are scoped to this repository.
       - name: Azure Login (OIDC)
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: needs.filter.outputs.infra == 'true' && github.event.pull_request.head.repo.full_name == github.repository
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -79,7 +86,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: What-if preview (main template)
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: needs.filter.outputs.infra == 'true' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
         run: |
@@ -90,25 +97,34 @@ jobs:
             --name "whatif-${{ github.run_id }}"
 
   # ------------------------------------------------------------------
-  # Validate NixOS flake (runs only if nixos paths changed)
+  # Validate NixOS flake (always runs so it can be a required check;
+  # performs validation only if nixos paths changed)
   # ------------------------------------------------------------------
   validate-nixos:
     name: Validate NixOS
     needs: filter
-    if: needs.filter.outputs.nixos == 'true'
     runs-on: ubuntu-latest
     steps:
+      - name: No NixOS changes detected
+        if: needs.filter.outputs.nixos != 'true'
+        run: echo "No changes under nixos/**; skipping NixOS validation."
+
       - name: Checkout
+        if: needs.filter.outputs.nixos == 'true'
         uses: actions/checkout@v4
 
       - name: Install Nix
+        if: needs.filter.outputs.nixos == 'true'
         uses: cachix/install-nix-action@v27
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Check NixOS flake
+        if: needs.filter.outputs.nixos == 'true'
         run: |
           cd nixos
-          # Generate lock file if not yet present (initial scaffold state)
-          if [ ! -f flake.lock ]; then nix flake update; fi
-          nix flake check .
+          if [ ! -f flake.lock ]; then
+            echo "Error: nixos/flake.lock is missing. Commit the lock file instead of generating it during CI."
+            exit 1
+          fi
+          nix flake check --no-update-lock-file .
