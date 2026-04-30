@@ -45,7 +45,8 @@ jobs:
           filters: |
             infra:
               - 'infra/**'
-              - '.github/workflows/**'
+              - '.github/workflows/ci-pr.yml'
+              - '.github/workflows/deploy-infra.yml'
             nixos:
               - 'nixos/**'
 
@@ -106,4 +107,8 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Check NixOS flake
-        run: nix flake check ./nixos
+        run: |
+          cd nixos
+          # Generate lock file if not yet present (initial scaffold state)
+          if [ ! -f flake.lock ]; then nix flake update; fi
+          nix flake check .

@@ -32,9 +32,10 @@
   # ── Firewall ────────────────────────────────────────────────────────
   networking.firewall = {
     enable = true;
-    # Allow SSH and Tailscale in the gateway subnet
+    # Allow SSH in the gateway subnet.
+    # Tailscale UDP port is opened automatically by services.tailscale.openFirewall
+    # in modules/tailscale.nix — no need to list it here.
     allowedTCPPorts = [ 22 ];
-    allowedUDPPorts = [ 41641 ]; # Tailscale
   };
 
   system.stateVersion = "24.11";

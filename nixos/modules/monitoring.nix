@@ -28,10 +28,8 @@
     port = 9100;
   };
 
-  # ── Firewall: allow Prometheus scrape from local AMA agent ───────────
-  networking.firewall.extraInputRules = ''
-    ip saddr 127.0.0.1 tcp dport 9100 accept
-  '';
+  # Loopback traffic to node_exporter is allowed by default on Linux;
+  # no extra firewall rule is needed.
 
   # ── Azure Monitor Agent (AMA) ────────────────────────────────────────
   # TODO: the official AMA for Linux is distributed as a VM extension through
