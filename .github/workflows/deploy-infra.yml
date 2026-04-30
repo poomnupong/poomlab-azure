@@ -1,6 +1,6 @@
 # Azure Infrastructure Deployment
 #
-# Deploys poomlab infrastructure to Azure using Bicep via OIDC authentication.
+# Deploys plaz infrastructure to Azure using Bicep via OIDC authentication.
 # Downloads the latest NixOS VHD from nixos-azimage-builder, stages it in an
 # Azure Compute Gallery, and deploys the VM from the gallery image version.
 
@@ -22,7 +22,7 @@ on:
       environment:
         description: 'Parameter file to use (without extension)'
         required: true
-        default: 'poomlab'
+        default: 'plaz'
 
 permissions:
   id-token: write   # Required for OIDC
@@ -30,7 +30,7 @@ permissions:
 
 env:
   DEPLOYMENT_LOCATION: southcentralus
-  PROJECT_NAME: poomlab
+  PROJECT_NAME: plaz
 
 jobs:
   # ------------------------------------------------------------------
@@ -240,7 +240,7 @@ jobs:
           az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --template-file infra/main.bicep \
-            --parameters infra/environments/${{ github.event.inputs.environment || 'poomlab' }}.bicepparam \
+            --parameters infra/environments/${{ github.event.inputs.environment || 'plaz' }}.bicepparam \
             --name "deploy-${{ github.run_id }}"
 
       - name: Show Outputs

@@ -1,5 +1,5 @@
 // main.bicep — Subscription-level orchestrator
-// Deploys all resource groups and modules for the poomlab environment
+// Deploys all resource groups and modules for the plaz environment
 
 targetScope = 'subscription'
 
@@ -11,7 +11,7 @@ targetScope = 'subscription'
 param location string
 
 @description('Project name used in resource naming')
-param projectName string = 'poomlab'
+param projectName string = 'plaz'
 
 @description('VM size for the NixOS gateway VM')
 param vmSize string = 'Standard_D4ads_v7'

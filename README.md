@@ -1,6 +1,6 @@
 # poomlab-azure
 
-IaC repo for PoomLab footprint in Azure, deployed via GitHub Actions with OIDC authentication.
+IaC repo for Plaz footprint in Azure, deployed via GitHub Actions with OIDC authentication.
 
 ## Architecture
 
@@ -19,9 +19,9 @@ Resources are organized into purpose-specific resource groups following Azure Cl
 
 | Resource Group | Purpose | Contents |
 |---|---|---|
-| `rg-poomlab-monitoring-<region>` | Monitoring & diagnostics | Log Analytics workspace, diagnostic settings |
-| `rg-poomlab-network-<region>` | Networking | VNETs, subnets, NSGs, public IPs, route tables |
-| `rg-poomlab-compute-<region>` | Compute workloads | VMs, disks, NICs |
+| `rg-plaz-monitoring-<region>` | Monitoring & diagnostics | Log Analytics workspace, diagnostic settings |
+| `rg-plaz-network-<region>` | Networking | VNETs, subnets, NSGs, public IPs, route tables |
+| `rg-plaz-compute-<region>` | Compute workloads | VMs, disks, NICs |
 
 ### Naming Convention
 
@@ -32,16 +32,16 @@ Follows [Azure CAF naming convention](https://learn.microsoft.com/en-us/azure/cl
 ```
 
 Examples:
-- `rg-poomlab-network-eastus2` — networking resource group
-- `vnet-poomlab-hub-eastus2` — hub VNET
-- `vm-poomlab-gw1-eastus2` — gateway VM
-- `pip-poomlab-gw1-eastus2` — public IP for gateway VM
-- `nsg-poomlab-gateway-eastus2` — NSG for gateway subnet
-- `log-poomlab-main-eastus2` — Log Analytics workspace
+- `rg-plaz-network-eastus2` — networking resource group
+- `vnet-plaz-hub-eastus2` — hub VNET
+- `vm-plaz-gw1-eastus2` — gateway VM
+- `pip-plaz-gw1-eastus2` — public IP for gateway VM
+- `nsg-plaz-gateway-eastus2` — NSG for gateway subnet
+- `log-plaz-main-eastus2` — Log Analytics workspace
 
 ### Network Design
 
-A single VNET (`vnet-poomlab-hub`) is deployed initially. This VNET is designed to become a **hub VNET** if the topology expands (hub-spoke model). The NixOS gateway VM sits in this hub and can act as a network virtual appliance (NVA) for routing between spokes.
+A single VNET (`vnet-plaz-hub`) is deployed initially. This VNET is designed to become a **hub VNET** if the topology expands (hub-spoke model). The NixOS gateway VM sits in this hub and can act as a network virtual appliance (NVA) for routing between spokes.
 
 Subnets:
 - `snet-gateway` — For the NixOS gateway/NVA VM (192.168.85.0/28, 11 hosts)
@@ -153,10 +153,10 @@ The GitHub Actions workflow (`deploy-infra`) will:
 
 ## Configuration
 
-Key parameters are in `infra/environments/poomlab.bicepparam`:
+Key parameters are in `infra/environments/plaz.bicepparam`:
 
 - `location` — Azure region for all resources (checked-in environment/workflow target: `southcentralus`)
-- `projectName` — Project identifier used in naming (default: `poomlab`)
+- `projectName` — Project identifier used in naming (default: `plaz`)
 - `vmSize` — VM SKU (default: `Standard_D4ads_v7`)
 - `adminUsername` — VM admin user
 - `adminSshPublicKey` — SSH public key for VM access

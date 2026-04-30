@@ -1,7 +1,7 @@
 using '../main.bicep'
 
 param location = 'southcentralus'
-param projectName = 'poomlab'
+param projectName = 'plaz'
 param vmSize = 'Standard_D4ads_v7'
 param adminUsername = 'azureuser'
 param adminSshPublicKey = readEnvironmentVariable('ADMIN_SSH_PUBLIC_KEY')
