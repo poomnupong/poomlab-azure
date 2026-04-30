@@ -50,7 +50,7 @@ resource imageDefinition 'Microsoft.Compute/galleries/images@2023-07-03' = {
     hyperVGeneration: 'V2'
     architecture: 'x64'
     identifier: {
-      publisher: 'poomlab'
+      publisher: 'plaz'
       offer: 'nixos'
       sku: 'nixos-azimage'
     }

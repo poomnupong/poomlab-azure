@@ -22,7 +22,7 @@ set -euo pipefail
 # ------------------------------------------------------------------
 SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:-}"
 LOCATION="${AZURE_LOCATION:-southcentralus}"
-PROJECT_NAME="${PROJECT_NAME:-poomlab}"
+PROJECT_NAME="${PROJECT_NAME:-plaz}"
 GITHUB_ORG="${GITHUB_ORG:-poomnupong}"
 GITHUB_REPO="${GITHUB_REPO:-poomlab-azure}"
 APP_DISPLAY_NAME="${PROJECT_NAME}-github-oidc"
@@ -63,7 +63,7 @@ fi
 az account set --subscription "$SUBSCRIPTION_ID"
 
 echo "============================================================"
-echo " PoomLab Azure Bootstrap"
+echo " Plaz Azure Bootstrap"
 echo "============================================================"
 echo " Subscription : $SUBSCRIPTION_ID"
 echo " Location     : $LOCATION"

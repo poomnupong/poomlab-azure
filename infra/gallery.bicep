@@ -14,7 +14,7 @@ targetScope = 'subscription'
 param location string
 
 @description('Project name used in resource naming')
-param projectName string = 'poomlab'
+param projectName string = 'plaz'
 
 @description('Tags applied to all resources')
 param tags object = {
