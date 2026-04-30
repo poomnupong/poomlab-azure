@@ -245,9 +245,22 @@ jobs:
           fi
 
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
-          GALLERY_NAME="gal_${{ env.PROJECT_NAME }}"
-          IMAGE_DEF="nixos-azimage"
+          GALLERY_NAME=$(az deployment sub show \
+            --name "gallery-${{ github.run_id }}" \
+            --query properties.outputs.galleryName.value -o tsv)
+          IMAGE_DEF=$(az deployment sub show \
+            --name "gallery-${{ github.run_id }}" \
+            --query properties.outputs.imageDefinitionName.value -o tsv)
 
+          if [ -z "${GALLERY_NAME:-}" ]; then
+            echo "::error::Failed to resolve galleryName from deployment outputs for gallery-${{ github.run_id }}"
+            exit 1
+          fi
+
+          if [ -z "${IMAGE_DEF:-}" ]; then
+            echo "::error::Failed to resolve imageDefinitionName from deployment outputs for gallery-${{ github.run_id }}"
+            exit 1
+          fi
           echo "Looking up image version ${IMAGE_VERSION} …"
           IMAGE_VERSION_ID=$(az sig image-version show \
             --resource-group "$GALLERY_RG" \
