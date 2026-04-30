@@ -2,6 +2,9 @@
 #
 # Host-specific configuration for the Azure NixOS gateway VM.
 # Import shared modules from ../../modules/ and add host-specific overrides here.
+#
+# Deployed via: nixos-rebuild switch --flake .#gw1
+# GitHub Actions nudges this VM using az vm run-command — no SSH key required.
 
 { config, pkgs, ... }:
 

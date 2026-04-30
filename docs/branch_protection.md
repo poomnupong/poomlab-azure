@@ -105,3 +105,15 @@ The `deploy-infra` and `deploy-nixos` workflows both use `environment: productio
 4. Optionally restrict which branches can deploy to `production` (only `main` should deploy)
 
 This means even after a PR is merged to `main`, the deployment itself is gated behind a manual approval step in the GitHub Actions UI.
+
+---
+
+## NixOS Deploy — No SSH Private Key Required
+
+The `deploy-nixos` workflow uses a **GitOps pull model** rather than SSH/Colmena:
+
+- **No SSH private key is needed.** The workflow uses the existing OIDC Azure login to invoke `az vm run-command invoke` on each target VM via the Azure control plane.
+- **The `GITHUB_TOKEN` is passed ephemerally.** Each `az vm run-command invoke` call passes the built-in `GITHUB_TOKEN` as an environment variable so the VM can pull its NixOS configuration from this private repository. The token is scoped to the workflow run and expires when the run ends — it is never written to disk or stored on the VM.
+- **The VM runs `nixos-rebuild switch --flake` itself.** It pulls the config directly from GitHub using the ephemeral token, applies the configuration, and the token is then discarded.
+
+This means the only secrets required are the standard OIDC set (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`) — the same secrets already used by `deploy-infra`.
