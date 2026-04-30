@@ -58,7 +58,7 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
-      imageVersionId: ${{ steps.stage.outputs.imageVersionId }}
+      imageVersion: ${{ steps.stage.outputs.imageVersion }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -138,7 +138,7 @@ jobs:
 
           if [ -n "$EXISTING" ]; then
             echo "✅ Image version $VERSION already exists"
-            echo "imageVersionId=$EXISTING" >> "$GITHUB_OUTPUT"
+            echo "imageVersion=$VERSION" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -202,8 +202,8 @@ jobs:
             --os-snapshot "$DISK_ID" \
             --query id -o tsv)
 
-          echo "✅ Image version created: $IMAGE_VERSION_ID"
-          echo "imageVersionId=$IMAGE_VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo "✅ Image version created: $VERSION"
+          echo "imageVersion=$VERSION" >> "$GITHUB_OUTPUT"
 
           # ── Cleanup staging disk ──────────────────────────────────────
           echo "🧹 Deleting staging disk …"
@@ -232,10 +232,54 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Resolve NixOS Image Version ID
+        id: resolve-image
+        env:
+          IMAGE_VERSION: ${{ needs.stage-image.outputs.imageVersion }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${IMAGE_VERSION:-}" ]; then
+            echo "::error::IMAGE_VERSION is empty — stage-image may not have produced an output"
+            exit 1
+          fi
+
+          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
+          GALLERY_NAME=$(az deployment sub show \
+            --name "gallery-${{ github.run_id }}" \
+            --query properties.outputs.galleryName.value -o tsv)
+          IMAGE_DEF=$(az deployment sub show \
+            --name "gallery-${{ github.run_id }}" \
+            --query properties.outputs.imageDefinitionName.value -o tsv)
+
+          if [ -z "${GALLERY_NAME:-}" ]; then
+            echo "::error::Failed to resolve galleryName from deployment outputs for gallery-${{ github.run_id }}"
+            exit 1
+          fi
+
+          if [ -z "${IMAGE_DEF:-}" ]; then
+            echo "::error::Failed to resolve imageDefinitionName from deployment outputs for gallery-${{ github.run_id }}"
+            exit 1
+          fi
+          echo "Looking up image version ${IMAGE_VERSION} …"
+          IMAGE_VERSION_ID=$(az sig image-version show \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            --gallery-image-version "$IMAGE_VERSION" \
+            --query id -o tsv 2>/dev/null || true)
+
+          if [ -z "$IMAGE_VERSION_ID" ]; then
+            echo "::error::Failed to resolve image version $IMAGE_VERSION — az sig image-version show returned empty"
+            exit 1
+          fi
+
+          echo "Resolved image version: $IMAGE_VERSION"
+          echo "NIXOS_IMAGE_ID=$IMAGE_VERSION_ID" >> "$GITHUB_ENV"
+
       - name: Deploy Infrastructure
         env:
           ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
-          NIXOS_IMAGE_ID: ${{ needs.stage-image.outputs.imageVersionId }}
         run: |
           az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
