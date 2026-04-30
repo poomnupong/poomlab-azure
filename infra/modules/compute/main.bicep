@@ -116,6 +116,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = if (hasImageVersion
       }
     }
     storageProfile: {
+      diskControllerType: 'SCSI'
       osDisk: {
         name: osDiskName
         createOption: 'FromImage'
