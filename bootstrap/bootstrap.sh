@@ -25,7 +25,7 @@ LOCATION="${AZURE_LOCATION:-southcentralus}"
 PROJECT_NAME="${PROJECT_NAME:-poomlab}"
 GITHUB_ORG="${GITHUB_ORG:-poomnupong}"
 GITHUB_REPO="${GITHUB_REPO:-poomlab-azure}"
-APP_DISPLAY_NAME="${PROJECT_NAME}-github-oidc"
+APP_DISPLAY_NAME="sp-${PROJECT_NAME}-github-oidc"
 
 # ------------------------------------------------------------------
 # Parse arguments
@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
     --location)     LOCATION="$2"; shift 2 ;;
     --github-org)   GITHUB_ORG="$2"; shift 2 ;;
     --github-repo)  GITHUB_REPO="$2"; shift 2 ;;
-    --project)      PROJECT_NAME="$2"; APP_DISPLAY_NAME="${2}-github-oidc"; shift 2 ;;
+    --project)      PROJECT_NAME="$2"; APP_DISPLAY_NAME="sp-${2}-github-oidc"; shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
