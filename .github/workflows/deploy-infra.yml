@@ -272,6 +272,47 @@ jobs:
           echo "Resolved image version: $IMAGE_VERSION"
           echo "NIXOS_IMAGE_ID=$IMAGE_VERSION_ID" >> "$GITHUB_ENV"
 
+      - name: Delete VM if image changed
+        run: |
+          set -euo pipefail
+
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+
+          # Check if VM exists
+          CURRENT_IMAGE=$(az vm show \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --query 'storageProfile.imageReference.id' -o tsv 2>/dev/null || true)
+
+          if [ -z "$CURRENT_IMAGE" ]; then
+            echo "VM does not exist yet — nothing to delete."
+            exit 0
+          fi
+
+          if [ "$CURRENT_IMAGE" = "$NIXOS_IMAGE_ID" ]; then
+            echo "VM already uses the target image — no deletion needed."
+            exit 0
+          fi
+
+          echo "⚠️  Image changed:"
+          echo "  current: $CURRENT_IMAGE"
+          echo "  target:  $NIXOS_IMAGE_ID"
+          echo "🗑️  Deleting VM $VM_NAME so it can be recreated with the new image …"
+          az vm delete \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --force-deletion yes \
+            --yes
+
+          # Also delete the old OS disk so Bicep can recreate it
+          OS_DISK="osdisk-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+          echo "🗑️  Deleting old OS disk $OS_DISK …"
+          az disk delete \
+            --resource-group "$RG" \
+            --name "$OS_DISK" \
+            --yes --no-wait || true
+
       - name: Deploy Infrastructure
         env:
           ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
