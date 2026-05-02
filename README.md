@@ -168,11 +168,11 @@ Go to **Settings → Secrets and variables → Actions → Secrets** (or use the
 | `AZURE_SUBSCRIPTION_ID` | Target Azure subscription ID               | Printed by bootstrap script     |
 | `ADMIN_SSH_PUBLIC_KEY`   | Your SSH public key (e.g. contents of `~/.ssh/id_ed25519.pub`) | Your local machine |
 
-**GitHub PAT** — used by `update-flake-lock` so that the auto-generated PR triggers `ci-pr.yml` (see [docs/secrets.md](docs/secrets.md) for full setup instructions):
+**GitHub PAT** — used by `update-flake-lock` so that the auto-generated PR triggers `ci-pr.yml` (a **fine-grained** token scoped to this repo is recommended — see [docs/secrets.md](docs/secrets.md) for full setup instructions):
 
 | Secret Name | Value                                   | Source          |
 |-------------|-----------------------------------------|-----------------|
-| `GH_PAT`    | Personal Access Token with `repo` scope | Your GitHub account — see [docs/secrets.md](docs/secrets.md) |
+| `GH_PAT`    | Fine-grained Personal Access Token (Contents + Pull requests, R/W) | Your GitHub account — see [docs/secrets.md](docs/secrets.md) |
 
 Using the GitHub CLI:
 
@@ -181,7 +181,7 @@ gh secret set AZURE_CLIENT_ID --body "<value from bootstrap output>"
 gh secret set AZURE_TENANT_ID --body "<value from bootstrap output>"
 gh secret set AZURE_SUBSCRIPTION_ID --body "<value from bootstrap output>"
 gh secret set ADMIN_SSH_PUBLIC_KEY --body "$(cat ~/.ssh/id_ed25519.pub)"
-gh secret set GH_PAT --body "<your PAT with repo scope>"
+gh secret set GH_PAT --body "<your fine-grained PAT>"
 ```
 
 > **Note:** The workflow also requires a GitHub **environment** named `production` for the deploy job. Create it under **Settings → Environments → New environment** and name it `production`. You can optionally add protection rules (e.g., required reviewers) to gate deployments.

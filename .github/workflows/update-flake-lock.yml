@@ -25,15 +25,20 @@
 #   by create-pull-request would never trigger ci-pr.yml, blocking the required
 #   status checks and making the PR unmergeable.
 #
-#   How to create GH_PAT:
+#   How to create GH_PAT (fine-grained PAT — recommended):
 #     1. GitHub → Settings → Developer settings → Personal access tokens
-#     2. Generate new token (classic) with the "repo" scope
-#        (or a fine-grained PAT with Contents read/write and
-#        Pull requests read/write scoped to this repository)
-#     3. Copy the token value
-#     4. In this repository go to Settings → Secrets and variables →
+#        → Fine-grained tokens → Generate new token
+#     2. Set Resource owner to your account (or org owning this repo)
+#     3. Under "Repository access" select "Only select repositories"
+#        and choose this repository
+#     4. Under "Permissions → Repository permissions" grant:
+#        • Contents — Read and Write
+#        • Pull requests — Read and Write
+#     5. Set expiration (e.g. 90 days), then click "Generate token"
+#     6. Copy the token value
+#     7. In this repository go to Settings → Secrets and variables →
 #        Actions → New repository secret
-#     5. Name: GH_PAT  |  Value: <paste token>
+#     8. Name: GH_PAT  |  Value: <paste token>
 
 name: update-flake-lock
 
