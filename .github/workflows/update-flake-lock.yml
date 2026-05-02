@@ -33,8 +33,28 @@ jobs:
     name: Update flake.lock
     runs-on: ubuntu-latest
     steps:
+      # Generate a GitHub App installation token so that commits and PRs
+      # created by this workflow are attributed to the app rather than
+      # GITHUB_TOKEN.  This is critical because GitHub suppresses
+      # pull_request / push events for activity originating from
+      # GITHUB_TOKEN, which would prevent ci-pr.yml from running on the
+      # auto-generated PR (blocking required status checks and making
+      # the PR unmergeable).
+      #
+      # Required repository secrets:
+      #   FLAKE_UPDATER_APP_ID          – GitHub App ID
+      #   FLAKE_UPDATER_APP_PRIVATE_KEY – GitHub App private key (PEM)
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.FLAKE_UPDATER_APP_ID }}
+          private-key: ${{ secrets.FLAKE_UPDATER_APP_PRIVATE_KEY }}
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Install Nix
         uses: cachix/install-nix-action@v27
@@ -48,7 +68,7 @@ jobs:
       - name: Open / update pull request
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           commit-message: "chore(nixos): update flake.lock"
           title: "chore(nixos): update flake.lock"
           body: |
