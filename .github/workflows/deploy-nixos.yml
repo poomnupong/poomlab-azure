@@ -120,29 +120,49 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Ensure gw1 is running
+        id: ensure-vm
         # The VM may be deallocated overnight by an org-level cost-control policy.
         # This step ensures it is running before attempting az vm run-command invoke,
         # which fails immediately if the VM is not in a running state.
-        # The workflow does NOT shut the VM back down — that is left to the cost-control policy.
+        # If the VM or resource group doesn't exist yet (e.g. infra was deleted for
+        # redeployment), the step sets vm_ready=false and subsequent steps are skipped.
         run: |
           set -euo pipefail
-          POWER_STATE=$(az vm get-instance-view \
-            --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
-            --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+
+          VM_VIEW_OUTPUT=""
+          VM_VIEW_EXIT=0
+          VM_VIEW_OUTPUT=$(az vm get-instance-view \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
             --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" \
-            --output tsv)
+            --output tsv 2>&1) || VM_VIEW_EXIT=$?
+
+          if [ $VM_VIEW_EXIT -ne 0 ]; then
+            if echo "$VM_VIEW_OUTPUT" | grep -qi "could not be found\|ResourceNotFound\|ResourceGroupNotFound"; then
+              echo "::warning::VM or resource group does not exist yet. Skipping deployment. Run deploy-infra first."
+              echo "vm_ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
+              echo "::error::Unexpected error querying VM: $VM_VIEW_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          POWER_STATE="$VM_VIEW_OUTPUT"
           echo "Current power state: $POWER_STATE"
           if [ "$POWER_STATE" != "PowerState/running" ]; then
             echo "VM is not running (state: $POWER_STATE). Starting VM..."
-            az vm start \
-              --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
-              --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+            az vm start --resource-group "$RG" --name "$VM_NAME"
             echo "VM started successfully."
           else
             echo "VM is already running. Skipping start."
           fi
+          echo "vm_ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Nudge gw1 to pull and apply its NixOS config
+        if: steps['ensure-vm'].outputs.vm_ready != 'false'
         # The GITHUB_TOKEN is passed ephemerally to the VM via --parameters.
         # It grants read access to this private repo only for the duration of
         # this workflow run. The VM uses it to pull the flake and run
