@@ -16,6 +16,24 @@
 #   workflow_dispatch for the first time will generate that initial lock file and
 #   open the bootstrapping PR. Merging that PR unblocks ci-pr.yml and
 #   deploy-nixos.yml, both of which currently fail because the lock file is absent.
+#
+# Required secret — GH_PAT:
+#   This workflow uses a Personal Access Token (PAT) stored as the repository
+#   secret GH_PAT.  A PAT is required (rather than the built-in GITHUB_TOKEN)
+#   because GitHub intentionally suppresses pull_request / push events for
+#   activity that originates from GITHUB_TOKEN.  Without a PAT the PR opened
+#   by create-pull-request would never trigger ci-pr.yml, blocking the required
+#   status checks and making the PR unmergeable.
+#
+#   How to create GH_PAT:
+#     1. GitHub → Settings → Developer settings → Personal access tokens
+#     2. Generate new token (classic) with the "repo" scope
+#        (or a fine-grained PAT with Contents read/write and
+#        Pull requests read/write scoped to this repository)
+#     3. Copy the token value
+#     4. In this repository go to Settings → Secrets and variables →
+#        Actions → New repository secret
+#     5. Name: GH_PAT  |  Value: <paste token>
 
 name: update-flake-lock
 
@@ -33,28 +51,10 @@ jobs:
     name: Update flake.lock
     runs-on: ubuntu-latest
     steps:
-      # Generate a GitHub App installation token so that commits and PRs
-      # created by this workflow are attributed to the app rather than
-      # GITHUB_TOKEN.  This is critical because GitHub suppresses
-      # pull_request / push events for activity originating from
-      # GITHUB_TOKEN, which would prevent ci-pr.yml from running on the
-      # auto-generated PR (blocking required status checks and making
-      # the PR unmergeable).
-      #
-      # Required repository secrets:
-      #   FLAKE_UPDATER_APP_ID          – GitHub App ID
-      #   FLAKE_UPDATER_APP_PRIVATE_KEY – GitHub App private key (PEM)
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.FLAKE_UPDATER_APP_ID }}
-          private-key: ${{ secrets.FLAKE_UPDATER_APP_PRIVATE_KEY }}
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GH_PAT }}
 
       - name: Install Nix
         uses: cachix/install-nix-action@v27
@@ -68,7 +68,7 @@ jobs:
       - name: Open / update pull request
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GH_PAT }}
           commit-message: "chore(nixos): update flake.lock"
           title: "chore(nixos): update flake.lock"
           body: |

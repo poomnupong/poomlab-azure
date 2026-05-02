@@ -73,13 +73,14 @@ The flake should reference the `nixos-azimage-builder` repo as an input for the 
 
 ## CI/CD Workflows
 
-Three GitHub Actions workflows manage validation and deployment for this repository:
+Four GitHub Actions workflows manage validation and deployment for this repository:
 
 | Workflow | File | Trigger | Purpose |
 |---|---|---|---|
 | `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | **Validation only — never deploys.** Uses `dorny/paths-filter` to run only the relevant checks: Bicep lint + `az deployment what-if` for `infra/**` changes; `nix flake check` for `nixos/**` changes. These are the required status checks for branch protection. |
 | `deploy-infra` | `.github/workflows/deploy-infra.yml` | Push to `main` on `infra/**`, or `workflow_dispatch` | Stages the NixOS gallery image and deploys Bicep infrastructure. |
 | `deploy-nixos` | `.github/workflows/deploy-nixos.yml` | Push to `main` on `nixos/**`, or `workflow_dispatch` | Uses Azure VM Run Command to nudge each affected VM (per-host path filtering). The VM pulls its own config from this repo using an ephemeral `GITHUB_TOKEN` and runs `nixos-rebuild switch`. No SSH private key required. |
+| `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly schedule (Monday 08:00 UTC), or `workflow_dispatch` | Runs `nix flake update` and opens a PR with the refreshed `nixos/flake.lock`. Requires `GH_PAT` secret so the PR triggers `ci-pr.yml`. |
 
 **Key principle:** `ci-pr` acts as the gate — it runs on every PR and must pass before merging. The deploy workflows only fire after a merge to `main`, and only for the paths that actually changed. A PR touching only `nixos/` will not trigger Bicep what-if, and a push affecting only `infra/` will not trigger a NixOS deploy.
 
@@ -154,9 +155,11 @@ At the end, it prints the values you need for the next step.
 
 ### 2. Configure GitHub Actions Secrets
 
-After running the bootstrap script, you must add the following **repository secrets** in GitHub so the workflow can authenticate to Azure via OIDC.
+After running the bootstrap script, you must add the following **repository secrets** in GitHub.
 
 Go to **Settings → Secrets and variables → Actions → Secrets** (or use the `gh` CLI) and create:
+
+**Azure OIDC secrets** — used by `ci-pr`, `deploy-infra`, and `deploy-nixos` to authenticate to Azure:
 
 | Secret Name              | Value                                      | Source                          |
 |--------------------------|--------------------------------------------|---------------------------------|
@@ -165,6 +168,12 @@ Go to **Settings → Secrets and variables → Actions → Secrets** (or use the
 | `AZURE_SUBSCRIPTION_ID` | Target Azure subscription ID               | Printed by bootstrap script     |
 | `ADMIN_SSH_PUBLIC_KEY`   | Your SSH public key (e.g. contents of `~/.ssh/id_ed25519.pub`) | Your local machine |
 
+**GitHub PAT** — used by `update-flake-lock` so that the auto-generated PR triggers `ci-pr.yml` (see [docs/secrets.md](docs/secrets.md) for full setup instructions):
+
+| Secret Name | Value                                   | Source          |
+|-------------|-----------------------------------------|-----------------|
+| `GH_PAT`    | Personal Access Token with `repo` scope | Your GitHub account — see [docs/secrets.md](docs/secrets.md) |
+
 Using the GitHub CLI:
 
 ```bash
@@ -172,6 +181,7 @@ gh secret set AZURE_CLIENT_ID --body "<value from bootstrap output>"
 gh secret set AZURE_TENANT_ID --body "<value from bootstrap output>"
 gh secret set AZURE_SUBSCRIPTION_ID --body "<value from bootstrap output>"
 gh secret set ADMIN_SSH_PUBLIC_KEY --body "$(cat ~/.ssh/id_ed25519.pub)"
+gh secret set GH_PAT --body "<your PAT with repo scope>"
 ```
 
 > **Note:** The workflow also requires a GitHub **environment** named `production` for the deploy job. Create it under **Settings → Environments → New environment** and name it `production`. You can optionally add protection rules (e.g., required reviewers) to gate deployments.
