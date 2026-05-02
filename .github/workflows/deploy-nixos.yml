@@ -89,6 +89,8 @@ jobs:
             #   - 'nixos/modules/**'
             #   - 'nixos/flake.nix'
             #   - 'nixos/flake.lock'
+            # NOTE: Each new VM's deploy job must also include an "Ensure <vmname> is running"
+            # step (before the nudge step) to handle VMs deallocated by cost-control policies.
 
   # ------------------------------------------------------------------
   # Deploy gw1 via Azure VM Run Command (GitOps pull nudge)
@@ -117,6 +119,31 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ensure gw1 is running
+        # The VM may be deallocated by org cost-control policies overnight.
+        # az vm run-command invoke requires the VM to be in running state, so
+        # we check the current power state and start the VM if it is not running.
+        # az vm start waits until the VM is fully running before returning, so
+        # no extra sleep or wait is needed after this step.
+        # NOTE: The VM will remain running after deploy — it is NOT shut down by
+        # this workflow. Shutdown is left to the org cost-control policy.
+        run: |
+          set -euo pipefail
+          STATE=$(az vm get-instance-view \
+            --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
+            --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
+            --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" \
+            --output tsv)
+          if [ "$STATE" != "PowerState/running" ]; then
+            echo "VM is '$STATE' — starting it..."
+            az vm start \
+              --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
+              --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+            echo "VM started."
+          else
+            echo "VM is already running."
+          fi
 
       - name: Nudge gw1 to pull and apply its NixOS config
         # The GITHUB_TOKEN is passed ephemerally to the VM via --parameters.
