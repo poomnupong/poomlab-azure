@@ -27,6 +27,10 @@ env:
   DEPLOYMENT_LOCATION: southcentralus
   PROJECT_NAME: plaz
 
+concurrency:
+  group: deploy-infra-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ------------------------------------------------------------------
   # Validate (runs on all triggers)
@@ -279,39 +283,48 @@ jobs:
           VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
           RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
 
-          # Check if VM exists
-          CURRENT_IMAGE=$(az vm show \
+          # Check if VM exists — only suppress the specific "not found" case
+          VM_SHOW_OUTPUT=""
+          VM_SHOW_EXIT=0
+          VM_SHOW_OUTPUT=$(az vm show \
             --resource-group "$RG" \
             --name "$VM_NAME" \
-            --query 'storageProfile.imageReference.id' -o tsv 2>/dev/null || true)
+            --query 'storageProfile.imageReference.id' -o tsv 2>&1) || VM_SHOW_EXIT=$?
 
-          if [ -z "$CURRENT_IMAGE" ]; then
-            echo "VM does not exist yet — nothing to delete."
-            exit 0
+          if [ $VM_SHOW_EXIT -ne 0 ]; then
+            if echo "$VM_SHOW_OUTPUT" | grep -qi "could not be found\|ResourceNotFound"; then
+              echo "VM does not exist yet -- nothing to delete."
+              exit 0
+            else
+              echo "::error::Unexpected error querying VM: $VM_SHOW_OUTPUT"
+              exit 1
+            fi
           fi
+
+          CURRENT_IMAGE="$VM_SHOW_OUTPUT"
 
           if [ "$CURRENT_IMAGE" = "$NIXOS_IMAGE_ID" ]; then
-            echo "VM already uses the target image — no deletion needed."
+            echo "VM already uses the target image -- no deletion needed."
             exit 0
           fi
 
-          echo "⚠️  Image changed:"
+          echo "Image changed:"
           echo "  current: $CURRENT_IMAGE"
           echo "  target:  $NIXOS_IMAGE_ID"
-          echo "🗑️  Deleting VM $VM_NAME so it can be recreated with the new image …"
+          echo "Deleting VM $VM_NAME so it can be recreated with the new image..."
           az vm delete \
             --resource-group "$RG" \
             --name "$VM_NAME" \
             --force-deletion yes \
             --yes
 
-          # Also delete the old OS disk so Bicep can recreate it
+          # Delete the old OS disk synchronously so Bicep can recreate it
           OS_DISK="osdisk-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
-          echo "🗑️  Deleting old OS disk $OS_DISK …"
+          echo "Deleting old OS disk $OS_DISK..."
           az disk delete \
             --resource-group "$RG" \
             --name "$OS_DISK" \
-            --yes --no-wait || true
+            --yes
 
       - name: Deploy Infrastructure
         env:
