@@ -39,6 +39,37 @@ gh secret set ADMIN_SSH_PUBLIC_KEY --repo poomnupong/poomlab-azure --body "$(cat
 
 ---
 
+## DEPLOY_SSH_PRIVATE_KEY (required by `deploy-nixos`)
+
+The private key corresponding to `ADMIN_SSH_PUBLIC_KEY`.  `deploy-nixos` uses
+this to SSH into each NixOS VM and run `nixos-rebuild switch`.
+
+### Why SSH instead of az vm run-command
+
+`az vm run-command invoke` relies on the `RunCommandLinux` Azure VM extension,
+which ships as a dynamically-linked binary.  NixOS cannot execute generic
+dynamically-linked ELF binaries without `nix-ld`, and `nix-ld` is only active
+after a first `nixos-rebuild switch` — creating a bootstrap deadlock.  SSH
+bypasses the Azure extension mechanism entirely and works on a fresh NixOS VM.
+
+The workflow temporarily adds an inbound NSG rule allowing SSH from the
+runner's ephemeral IP, performs the deployment, then removes the rule.
+
+| Secret Name               | Description                                               |
+|---------------------------|-----------------------------------------------------------|
+| `DEPLOY_SSH_PRIVATE_KEY`  | Contents of the private key file (e.g. `~/.ssh/id_ed25519`) |
+
+Set it with:
+
+```bash
+gh secret set DEPLOY_SSH_PRIVATE_KEY --repo poomnupong/poomlab-azure --body "$(cat ~/.ssh/id_ed25519)"
+```
+
+> **Important**: This must be the private key whose **public** counterpart is
+> stored in `ADMIN_SSH_PUBLIC_KEY` and was injected into the VM by `deploy-infra`.
+
+---
+
 ## GH_PAT — Personal Access Token (required by `update-flake-lock`)
 
 ### What it is
@@ -110,10 +141,11 @@ following the steps above and update the `GH_PAT` secret.
 
 ## Summary table
 
-| Secret Name              | Used by workflow(s)                     | Notes                              |
-|--------------------------|-----------------------------------------|------------------------------------|
-| `AZURE_CLIENT_ID`        | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
-| `AZURE_TENANT_ID`        | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
-| `AZURE_SUBSCRIPTION_ID`  | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
-| `ADMIN_SSH_PUBLIC_KEY`   | `deploy-infra`, `ci-pr`                 | Your SSH public key; used by Bicep template and what-if |
-| `GH_PAT`                 | `update-flake-lock`                     | Fine-grained PAT (Contents + Pull requests, R/W) — enables `ci-pr.yml` to trigger on auto-generated PRs |
+| Secret Name               | Used by workflow(s)                     | Notes                              |
+|---------------------------|-----------------------------------------|------------------------------------|
+| `AZURE_CLIENT_ID`         | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
+| `AZURE_TENANT_ID`         | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
+| `AZURE_SUBSCRIPTION_ID`   | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
+| `ADMIN_SSH_PUBLIC_KEY`    | `deploy-infra`, `ci-pr`                 | Your SSH public key; used by Bicep template and what-if |
+| `DEPLOY_SSH_PRIVATE_KEY`  | `deploy-nixos`                          | Private key matching `ADMIN_SSH_PUBLIC_KEY`; used to SSH into VMs for nixos-rebuild |
+| `GH_PAT`                  | `update-flake-lock`                     | Fine-grained PAT (Contents + Pull requests, R/W) — enables `ci-pr.yml` to trigger on auto-generated PRs |

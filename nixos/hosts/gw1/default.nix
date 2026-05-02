@@ -4,7 +4,7 @@
 # Import shared modules from ../../modules/ and add host-specific overrides here.
 #
 # Deployed via: nixos-rebuild switch --flake .#gw1
-# GitHub Actions nudges this VM using az vm run-command — no SSH key required.
+# GitHub Actions deploys this VM via SSH (see deploy-nixos.yml).
 
 { config, pkgs, ... }:
 

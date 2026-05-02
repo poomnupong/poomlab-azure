@@ -1,7 +1,7 @@
 # Top-level Nix flake for plaz NixOS hosts
 #
 # Consumed by `nixos-rebuild switch --flake .#<hostname>` run directly on each VM.
-# GitHub Actions nudges each VM via `az vm run-command invoke` — no SSH key needed.
+# GitHub Actions deploys each VM via SSH (see deploy-nixos.yml).
 #
 # Usage:
 #   nix flake check          — validate all host configs

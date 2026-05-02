@@ -2,20 +2,30 @@
 #
 # Uses a "push nudge / pull deploy" pattern:
 #   1. GitHub Actions detects which VM's config changed (via path filtering).
-#   2. For each changed VM, it calls `az vm run-command invoke` (using the
-#      existing OIDC service principal — no SSH private key required).
-#   3. The run-command passes an ephemeral GITHUB_TOKEN to the VM.
-#   4. The VM runs `nixos-rebuild switch --flake` pulling its own config
-#      directly from this private GitHub repository using that token.
+#   2. For each changed VM, it opens a temporary SSH inbound rule in the NSG
+#      (scoped to the runner's ephemeral IP), then SSHes into the VM.
+#   3. The VM runs `nixos-rebuild switch --flake` pulling its own config
+#      directly from this private GitHub repository using an ephemeral
+#      GITHUB_TOKEN passed via NIX_CONFIG.
+#   4. The temporary NSG rule is removed when the workflow ends.
 #   5. The token expires when the workflow ends and is NEVER stored on the VM.
 #
-# Required secrets (same OIDC set as deploy-infra — no new secrets needed):
-#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# Why SSH instead of az vm run-command invoke?
+#   az vm run-command invoke installs the RunCommandLinux VM extension, which
+#   ships as a dynamically-linked binary.  NixOS cannot run generic
+#   dynamically-linked binaries without nix-ld, and nix-ld (already in
+#   base.nix) can only be applied by a nixos-rebuild — creating a bootstrap
+#   deadlock.  SSH bypasses the Azure extension mechanism entirely.
+#
+# Required secrets:
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID  (OIDC — same as deploy-infra)
+#   DEPLOY_SSH_PRIVATE_KEY  (private key matching ADMIN_SSH_PUBLIC_KEY; see docs/secrets.md)
 #
 # To add a new VM:
 #   1. Create a nixos/hosts/<vmname>/ directory with default.nix and hardware.nix.
 #   2. Add a filter entry for '<vmname>: nixos/hosts/<vmname>/**' in the filter job.
 #   3. Duplicate the deploy-gw1 job, updating the filter key and VM name throughout.
+
 
 name: deploy-nixos
 
@@ -92,15 +102,15 @@ jobs:
             #   - 'nixos/flake.lock'
 
   # ------------------------------------------------------------------
-  # Deploy gw1 via Azure VM Run Command (GitOps pull nudge)
+  # Deploy gw1 via SSH (GitOps pull nudge)
   #
   # How it works:
-  #   - The GITHUB_TOKEN is passed as an environment variable into the
-  #     run-command script. It is ephemeral: it expires when this workflow
-  #     run ends and is NEVER written to disk or stored on the VM.
+  #   - A temporary NSG rule allows SSH from the runner's ephemeral IP.
+  #   - The GITHUB_TOKEN is passed via NIX_CONFIG so nixos-rebuild can pull
+  #     the flake from this private repo.  It is ephemeral: it expires when
+  #     this workflow run ends and is NEVER written to disk or stored on the VM.
   #   - The VM is a NixOS host, so nixos-rebuild is always available.
-  #   - The --parameters flag on `az vm run-command invoke` injects env vars
-  #     into the script execution environment on the VM.
+  #   - The NSG rule is removed after deployment (or on failure).
   # ------------------------------------------------------------------
   deploy-gw1:
     name: Deploy gw1
@@ -122,7 +132,7 @@ jobs:
       - name: Ensure gw1 is running
         id: ensure-vm
         # The VM may be deallocated overnight by an org-level cost-control policy.
-        # This step ensures it is running before attempting az vm run-command invoke,
+        # This step ensures it is running before attempting SSH deployment,
         # which fails immediately if the VM is not in a running state.
         # If the VM or resource group doesn't exist yet (e.g. infra was deleted for
         # redeployment), the step sets vm_ready=false and subsequent steps are skipped.
@@ -161,29 +171,94 @@ jobs:
           fi
           echo "vm_ready=true" >> "$GITHUB_OUTPUT"
 
-      - name: Nudge gw1 to pull and apply its NixOS config
+      - name: Open SSH in NSG for runner
+        # Temporarily allow SSH from this GitHub Actions runner so we can deploy
+        # via SSH below.  The rule is removed in the "Close SSH in NSG" step that
+        # runs unconditionally (if: always()) after deployment completes or fails.
+        #
+        # Why SSH instead of az vm run-command invoke?
+        #   az vm run-command invoke installs the RunCommandLinux VM extension,
+        #   which ships as a dynamically-linked binary.  NixOS cannot execute
+        #   generic dynamically-linked binaries without nix-ld — and nix-ld is
+        #   enabled in base.nix but must first be applied via nixos-rebuild, creating
+        #   a bootstrap deadlock.  SSH bypasses the Azure extension mechanism entirely
+        #   and works on a fresh NixOS VM before any rebuild has taken place.
+        id: open-ssh
         if: steps['ensure-vm'].outputs.vm_ready != 'false'
-        # The GITHUB_TOKEN is passed ephemerally to the VM via --parameters.
-        # It grants read access to this private repo only for the duration of
-        # this workflow run. The VM uses it to pull the flake and run
-        # nixos-rebuild switch, then the token expires automatically.
-        # No SSH private key is required — the Azure control plane handles auth.
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Mask the token so it does not appear in the Actions log.
+          RUNNER_IP=$(curl -sf https://api.ipify.org)
+          echo "runner_ip=$RUNNER_IP" >> "$GITHUB_OUTPUT"
+
+          NSG_RG="rg-${{ env.PROJECT_NAME }}-network-${{ env.DEPLOYMENT_LOCATION }}"
+          NSG_NAME="nsg-${{ env.PROJECT_NAME }}-gateway-${{ env.DEPLOYMENT_LOCATION }}"
+
+          # Remove any stale rule from a previous interrupted run before recreating.
+          az network nsg rule delete \
+            --resource-group "$NSG_RG" \
+            --nsg-name "$NSG_NAME" \
+            --name "AllowSSHFromRunner" 2>/dev/null || true
+
+          az network nsg rule create \
+            --resource-group "$NSG_RG" \
+            --nsg-name "$NSG_NAME" \
+            --name "AllowSSHFromRunner" \
+            --priority 900 \
+            --direction Inbound \
+            --access Allow \
+            --protocol Tcp \
+            --source-address-prefix "${RUNNER_IP}/32" \
+            --source-port-range '*' \
+            --destination-address-prefix '*' \
+            --destination-port-range 22
+
+      - name: Deploy gw1 NixOS config via SSH
+        if: steps['ensure-vm'].outputs.vm_ready != 'false'
+        # The GITHUB_TOKEN is passed ephemerally to nixos-rebuild via NIX_CONFIG.
+        # It grants read-only access to this private repo only for the duration of
+        # this workflow run, then expires automatically — it is never stored on disk.
+        #
+        # sudo is required because nixos-rebuild switch needs root privileges.
+        # base.nix sets security.sudo.wheelNeedsPassword = false so that azureuser
+        # (a wheel member) can run sudo without a password over SSH.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
           echo "::add-mask::$GH_TOKEN"
 
-          # az vm run-command invoke exits non-zero if the script fails, so
-          # the command's own exit code is the reliable signal.
-          OUTPUT=$(az vm run-command invoke \
-            --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
-            --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
-            --command-id RunShellScript \
-            --scripts "export NIX_CONFIG=\"access-tokens = github.com=\${GITHUB_TOKEN}\" && nixos-rebuild switch --flake \"github:${{ github.repository }}#gw1\" 2>&1" \
-            --parameters "GITHUB_TOKEN=$GH_TOKEN" \
-            --output json)
+          # Write SSH private key to a temp file; clean it up on exit.
+          install -m 600 /dev/null /tmp/deploy_key
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > /tmp/deploy_key
+          trap 'rm -f /tmp/deploy_key' EXIT
 
-          # Extract and print the command output so it is visible in the Actions log.
-          echo "$OUTPUT" | jq -r '.value[0].message'
+          VM_IP=$(az network public-ip show \
+            --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
+            --name "pip-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
+            --query ipAddress -o tsv)
+
+          # Run nixos-rebuild as root via sudo.
+          # The command is sent via SSH stdin (heredoc) rather than as a
+          # command-line argument so that NIX_CONFIG (which carries the
+          # ephemeral GITHUB_TOKEN) is never visible in remote process listings
+          # (/proc/<pid>/cmdline or `ps aux`).
+          ssh \
+            -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=30 \
+            -o BatchMode=yes \
+            -i /tmp/deploy_key \
+            azureuser@"$VM_IP" sudo sh <<NIXOS_DEPLOY
+set -e
+NIX_CONFIG="access-tokens = github.com=$GH_TOKEN" nixos-rebuild switch --flake "github:${{ github.repository }}#gw1" 2>&1
+NIXOS_DEPLOY
+
+      - name: Close SSH in NSG
+        # Always runs so the temporary inbound rule is cleaned up even if the
+        # deployment step failed or was interrupted.
+        if: always() && steps['open-ssh'].outcome == 'success'
+        run: |
+          az network nsg rule delete \
+            --resource-group "rg-${{ env.PROJECT_NAME }}-network-${{ env.DEPLOYMENT_LOCATION }}" \
+            --nsg-name "nsg-${{ env.PROJECT_NAME }}-gateway-${{ env.DEPLOYMENT_LOCATION }}" \
+            --name "AllowSSHFromRunner" 2>/dev/null || true

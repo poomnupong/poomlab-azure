@@ -61,5 +61,10 @@
   };
 
   # ── Sudo ────────────────────────────────────────────────────────────
-  security.sudo.wheelNeedsPassword = true;
+  # Passwordless sudo for wheel members is required by the deploy-nixos
+  # workflow: GitHub Actions SSHes in as azureuser (a wheel member) and runs
+  # `sudo nixos-rebuild switch`.  The NSG restricts SSH access to the runner's
+  # ephemeral IP only for the duration of each deployment, so the broader sudo
+  # permission is safe in this context.
+  security.sudo.wheelNeedsPassword = false;
 }
