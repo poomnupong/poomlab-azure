@@ -48,6 +48,9 @@ jobs:
       - name: Validate gallery template
         run: az bicep build --file infra/gallery.bicep
 
+      - name: Validate keyvault template
+        run: az bicep build --file infra/keyvault.bicep
+
   # ------------------------------------------------------------------
   # Stage NixOS Image (only on push to main or manual dispatch)
   # ------------------------------------------------------------------
@@ -230,6 +233,67 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Key Vault Infrastructure
+        # Creates a Key Vault in rg-<project>-security-<location> and grants
+        # the CI service principal Key Vault Secrets Officer access so subsequent
+        # steps can create and read secrets without any additional credentials.
+        run: |
+          set -euo pipefail
+
+          SP_OBJECT_ID=$(az ad sp show --id "${{ secrets.AZURE_CLIENT_ID }}" --query id -o tsv)
+
+          az deployment sub create \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file infra/keyvault.bicep \
+            --parameters location="${{ env.DEPLOYMENT_LOCATION }}" \
+                         projectName="${{ env.PROJECT_NAME }}" \
+                         ciServicePrincipalObjectId="$SP_OBJECT_ID" \
+            --name "keyvault-${{ github.run_id }}"
+
+          KV_NAME=$(az deployment sub show \
+            --name "keyvault-${{ github.run_id }}" \
+            --query 'properties.outputs.keyVaultName.value' -o tsv)
+          echo "KV_NAME=$KV_NAME" >> "$GITHUB_ENV"
+
+      - name: Ensure deployment SSH key in Key Vault
+        # Checks whether a deployment SSH keypair already exists in the Key Vault.
+        # If not, generates a fresh ed25519 keypair:
+        #   - private key → Key Vault secret 'ssh-deploy-private-key' (used by deploy-nixos)
+        #   - public key  → Key Vault secret 'ssh-deploy-public-key' (passed to Bicep below)
+        # On subsequent runs the existing key is reused — no rotation occurs unless
+        # the Key Vault is recreated.  The private key never appears as a GitHub secret.
+        run: |
+          set -euo pipefail
+
+          EXISTING=$(az keyvault secret show \
+            --vault-name "$KV_NAME" \
+            --name "ssh-deploy-public-key" \
+            --query value -o tsv 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ]; then
+            echo "Deployment SSH key already exists in Key Vault — reusing."
+            echo "DEPLOYMENT_SSH_PUBLIC_KEY=$EXISTING" >> "$GITHUB_ENV"
+          else
+            echo "Generating new deployment SSH keypair…"
+            ssh-keygen -t ed25519 -N "" \
+              -C "deploy-nixos@${{ github.repository }}" \
+              -f /tmp/deploy_key
+
+            az keyvault secret set \
+              --vault-name "$KV_NAME" \
+              --name "ssh-deploy-private-key" \
+              --file /tmp/deploy_key \
+              --output none
+            az keyvault secret set \
+              --vault-name "$KV_NAME" \
+              --name "ssh-deploy-public-key" \
+              --value "$(cat /tmp/deploy_key.pub)" \
+              --output none
+
+            echo "DEPLOYMENT_SSH_PUBLIC_KEY=$(cat /tmp/deploy_key.pub)" >> "$GITHUB_ENV"
+            rm -f /tmp/deploy_key /tmp/deploy_key.pub
+          fi
 
       - name: Resolve NixOS Image Version ID
         id: resolve-image

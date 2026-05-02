@@ -75,6 +75,10 @@ jobs:
         if: needs.filter.outputs.infra == 'true'
         run: az bicep build --file infra/gallery.bicep
 
+      - name: Lint keyvault template
+        if: needs.filter.outputs.infra == 'true'
+        run: az bicep build --file infra/keyvault.bicep
+
       # Azure login is only possible on PRs from the same repo (not forks),
       # because OIDC federated credentials are scoped to this repository.
       - name: Azure Login (OIDC)

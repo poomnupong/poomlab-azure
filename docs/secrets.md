@@ -39,10 +39,24 @@ gh secret set ADMIN_SSH_PUBLIC_KEY --repo poomnupong/poomlab-azure --body "$(cat
 
 ---
 
-## DEPLOY_SSH_PRIVATE_KEY (required by `deploy-nixos`)
+## SSH deployment key (managed automatically — no GitHub secret required)
 
-The private key corresponding to `ADMIN_SSH_PUBLIC_KEY`.  `deploy-nixos` uses
-this to SSH into each NixOS VM and run `nixos-rebuild switch`.
+`deploy-nixos` uses SSH to apply NixOS configurations to VMs.  The SSH key
+used for deployments is **fully managed by the `deploy-infra` workflow** — you
+never need to create, store, or rotate it manually.
+
+### How it works
+
+1. The first time `deploy-infra` runs, it generates a fresh `ed25519` keypair.
+2. The **private key** is stored in Azure Key Vault (`rg-<project>-security-<location>`).
+3. The **public key** is injected into each VM's `authorized_keys` via Bicep at
+   VM creation time (alongside your `ADMIN_SSH_PUBLIC_KEY`).
+4. `deploy-nixos` fetches the private key from Key Vault using the existing
+   OIDC credentials — no extra GitHub secret needed.
+
+On subsequent `deploy-infra` runs the existing keypair is reused (idempotent).
+The key only changes if the Key Vault is deleted and recreated, in which case
+the VM must also be recreated so cloud-init can inject the new public key.
 
 ### Why SSH instead of az vm run-command
 
@@ -54,19 +68,6 @@ bypasses the Azure extension mechanism entirely and works on a fresh NixOS VM.
 
 The workflow temporarily adds an inbound NSG rule allowing SSH from the
 runner's ephemeral IP, performs the deployment, then removes the rule.
-
-| Secret Name               | Description                                               |
-|---------------------------|-----------------------------------------------------------|
-| `DEPLOY_SSH_PRIVATE_KEY`  | Contents of the private key file (e.g. `~/.ssh/id_ed25519`) |
-
-Set it with:
-
-```bash
-gh secret set DEPLOY_SSH_PRIVATE_KEY --repo poomnupong/poomlab-azure --body "$(cat ~/.ssh/id_ed25519)"
-```
-
-> **Important**: This must be the private key whose **public** counterpart is
-> stored in `ADMIN_SSH_PUBLIC_KEY` and was injected into the VM by `deploy-infra`.
 
 ---
 
@@ -141,11 +142,14 @@ following the steps above and update the `GH_PAT` secret.
 
 ## Summary table
 
-| Secret Name               | Used by workflow(s)                     | Notes                              |
-|---------------------------|-----------------------------------------|------------------------------------|
-| `AZURE_CLIENT_ID`         | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
-| `AZURE_TENANT_ID`         | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
-| `AZURE_SUBSCRIPTION_ID`   | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
-| `ADMIN_SSH_PUBLIC_KEY`    | `deploy-infra`, `ci-pr`                 | Your SSH public key; used by Bicep template and what-if |
-| `DEPLOY_SSH_PRIVATE_KEY`  | `deploy-nixos`                          | Private key matching `ADMIN_SSH_PUBLIC_KEY`; used to SSH into VMs for nixos-rebuild |
-| `GH_PAT`                  | `update-flake-lock`                     | Fine-grained PAT (Contents + Pull requests, R/W) — enables `ci-pr.yml` to trigger on auto-generated PRs |
+| Secret Name              | Used by workflow(s)                     | Notes                              |
+|--------------------------|-----------------------------------------|------------------------------------|
+| `AZURE_CLIENT_ID`        | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
+| `AZURE_TENANT_ID`        | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
+| `AZURE_SUBSCRIPTION_ID`  | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
+| `ADMIN_SSH_PUBLIC_KEY`   | `deploy-infra`, `ci-pr`                 | Your SSH public key; used by Bicep template and what-if |
+| `GH_PAT`                 | `update-flake-lock`                     | Fine-grained PAT (Contents + Pull requests, R/W) — enables `ci-pr.yml` to trigger on auto-generated PRs |
+
+> **No SSH private key in GitHub secrets.** `deploy-nixos` retrieves the
+> deployment SSH key from Azure Key Vault (created automatically by
+> `deploy-infra`) using the existing OIDC credentials.
