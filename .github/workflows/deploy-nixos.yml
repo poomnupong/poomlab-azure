@@ -118,6 +118,29 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Ensure gw1 is running
+        # The VM may be deallocated overnight by an org-level cost-control policy.
+        # This step ensures it is running before attempting az vm run-command invoke,
+        # which fails immediately if the VM is not in a running state.
+        # The workflow does NOT shut the VM back down — that is left to the cost-control policy.
+        run: |
+          set -euo pipefail
+          POWER_STATE=$(az vm get-instance-view \
+            --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
+            --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
+            --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" \
+            --output tsv)
+          echo "Current power state: $POWER_STATE"
+          if [ "$POWER_STATE" != "PowerState/running" ]; then
+            echo "VM is not running (state: $POWER_STATE). Starting VM..."
+            az vm start \
+              --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
+              --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+            echo "VM started successfully."
+          else
+            echo "VM is already running. Skipping start."
+          fi
+
       - name: Nudge gw1 to pull and apply its NixOS config
         # The GITHUB_TOKEN is passed ephemerally to the VM via --parameters.
         # It grants read access to this private repo only for the duration of
