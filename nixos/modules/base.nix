@@ -6,6 +6,12 @@
 { config, pkgs, ... }:
 
 {
+  # ── Dynamic linker compatibility ────────────────────────────────────
+  # Required so the Azure VM agent (waagent) and extensions like
+  # RunCommandLinux can execute their dynamically-linked binaries.
+  # Without this, `az vm run-command invoke` fails with exit code 127.
+  programs.nix-ld.enable = true;
+
   # ── Nix settings ────────────────────────────────────────────────────
   nix = {
     settings = {
