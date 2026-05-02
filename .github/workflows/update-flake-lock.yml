@@ -1,0 +1,99 @@
+# Automated Flake Lock Updater
+#
+# Full flow:
+#   1. This workflow runs `nix flake update` inside nixos/ to resolve all inputs
+#      to their latest versions and write/refresh nixos/flake.lock.
+#   2. peter-evans/create-pull-request opens (or force-pushes) a PR on branch
+#      automated/update-flake-lock containing only the changed flake.lock.
+#      If there is no diff (lock file already up to date) no PR is created.
+#   3. A team member reviews and merges the PR.
+#   4. The merge triggers ci-pr.yml (validation gate) on the PR and, once merged
+#      to main, triggers deploy-nixos.yml which nudges all affected VMs to run
+#      `nixos-rebuild switch` with the updated nixpkgs input.
+#
+# First run note:
+#   nixos/flake.lock does not yet exist in the repo. Running this workflow via
+#   workflow_dispatch for the first time will generate that initial lock file and
+#   open the bootstrapping PR. Merging that PR unblocks ci-pr.yml and
+#   deploy-nixos.yml, both of which currently fail because the lock file is absent.
+
+name: update-flake-lock
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 8 * * 1'   # Every Monday at 08:00 UTC
+
+permissions:
+  contents: write       # Required to push the commit with flake.lock
+  pull-requests: write  # Required to open / update the PR
+
+jobs:
+  update-flake-lock:
+    name: Update flake.lock
+    runs-on: ubuntu-latest
+    steps:
+      # Generate a GitHub App installation token so that commits and PRs
+      # created by this workflow are attributed to the app rather than
+      # GITHUB_TOKEN.  This is critical because GitHub suppresses
+      # pull_request / push events for activity originating from
+      # GITHUB_TOKEN, which would prevent ci-pr.yml from running on the
+      # auto-generated PR (blocking required status checks and making
+      # the PR unmergeable).
+      #
+      # Required repository secrets:
+      #   FLAKE_UPDATER_APP_ID          – GitHub App ID
+      #   FLAKE_UPDATER_APP_PRIVATE_KEY – GitHub App private key (PEM)
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.FLAKE_UPDATER_APP_ID }}
+          private-key: ${{ secrets.FLAKE_UPDATER_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: "experimental-features = nix-command flakes"
+
+      - name: Update flake inputs
+        run: cd nixos && nix flake update
+
+      - name: Open / update pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          commit-message: "chore(nixos): update flake.lock"
+          title: "chore(nixos): update flake.lock"
+          body: |
+            ## Automated nixpkgs input bump
+
+            This pull request was opened automatically by the `update-flake-lock`
+            workflow. It contains a refreshed `nixos/flake.lock` that pins all
+            flake inputs (primarily `nixpkgs`) to their latest revisions.
+
+            ### What to do
+
+            1. Review the diff — confirm `nixpkgs` bumped to an expected revision.
+            2. Merge this PR.
+
+            ### What happens after merge
+
+            Merging triggers `deploy-nixos.yml`, which uses `az vm run-command
+            invoke` to nudge every affected VM to run:
+
+            ```
+            nixos-rebuild switch --flake github:<repo>#<hostname>
+            ```
+
+            Each VM will pull the updated config (including the new `nixpkgs`
+            pin) and rebuild itself. No manual SSH or intervention is required.
+          branch: "automated/update-flake-lock"
+          delete-branch: true
+          labels: "dependencies,nixos"
