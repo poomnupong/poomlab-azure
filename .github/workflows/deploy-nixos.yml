@@ -83,6 +83,7 @@ jobs:
               - 'nixos/modules/**'
               - 'nixos/flake.nix'
               - 'nixos/flake.lock'
+              - '.github/workflows/deploy-nixos.yml'
             # Future VMs: add entries here, e.g.:
             # vm2:
             #   - 'nixos/hosts/vm2/**'
