@@ -162,7 +162,7 @@ jobs:
           echo "vm_ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Nudge gw1 to pull and apply its NixOS config
-        if: steps.ensure-vm.outputs.vm_ready != 'false'
+        if: steps['ensure-vm'].outputs.vm_ready != 'false'
         # The GITHUB_TOKEN is passed ephemerally to the VM via --parameters.
         # It grants read access to this private repo only for the duration of
         # this workflow run. The VM uses it to pull the flake and run
