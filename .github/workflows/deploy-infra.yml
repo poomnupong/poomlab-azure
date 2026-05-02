@@ -279,11 +279,13 @@ jobs:
       - name: Delete VM if image changed
         run: |
           set -euo pipefail
-
-          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+          # Check if VM exists. `az vm list` returns an empty result when the VM
+          # is absent, but still fails for unexpected Azure CLI/auth/resource
+          # errors, which should stop the workflow.
+          CURRENT_IMAGE=$(az vm list \
           RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
-
-          # Check if VM exists — only suppress the specific "not found" case
+            --query "[?name=='$VM_NAME'].storageProfile.imageReference.id | [0]" \
+            -o tsv)
           VM_SHOW_OUTPUT=""
           VM_SHOW_EXIT=0
           VM_SHOW_OUTPUT=$(az vm show \
