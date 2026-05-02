@@ -73,7 +73,7 @@ The flake should reference the `nixos-azimage-builder` repo as an input for the 
 
 ## CI/CD Workflows
 
-Three GitHub Actions workflows manage validation and deployment for this repository:
+Four GitHub Actions workflows manage validation and deployment for this repository:
 
 | Workflow | File | Trigger | Purpose |
 |---|---|---|---|
@@ -155,9 +155,11 @@ At the end, it prints the values you need for the next step.
 
 ### 2. Configure GitHub Actions Secrets
 
-After running the bootstrap script, you must add the following **repository secrets** in GitHub so the workflow can authenticate to Azure via OIDC.
+After running the bootstrap script, you must add the following **repository secrets** in GitHub.
 
 Go to **Settings → Secrets and variables → Actions → Secrets** (or use the `gh` CLI) and create:
+
+**Azure OIDC secrets** — used by `ci-pr`, `deploy-infra`, and `deploy-nixos` to authenticate to Azure:
 
 | Secret Name              | Value                                      | Source                          |
 |--------------------------|--------------------------------------------|---------------------------------|
@@ -165,7 +167,12 @@ Go to **Settings → Secrets and variables → Actions → Secrets** (or use the
 | `AZURE_TENANT_ID`       | Azure AD tenant ID                         | Printed by bootstrap script     |
 | `AZURE_SUBSCRIPTION_ID` | Target Azure subscription ID               | Printed by bootstrap script     |
 | `ADMIN_SSH_PUBLIC_KEY`   | Your SSH public key (e.g. contents of `~/.ssh/id_ed25519.pub`) | Your local machine |
-| `GH_PAT`                | Personal Access Token with `repo` scope    | See [docs/secrets.md](docs/secrets.md) |
+
+**GitHub PAT** — used by `update-flake-lock` so that the auto-generated PR triggers `ci-pr.yml` (see [docs/secrets.md](docs/secrets.md) for full setup instructions):
+
+| Secret Name | Value                                   | Source          |
+|-------------|-----------------------------------------|-----------------|
+| `GH_PAT`    | Personal Access Token with `repo` scope | Your GitHub account — see [docs/secrets.md](docs/secrets.md) |
 
 Using the GitHub CLI:
 

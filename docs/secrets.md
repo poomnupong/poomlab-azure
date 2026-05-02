@@ -6,9 +6,9 @@ workflows in this repository.  All secrets are stored under
 
 ---
 
-## Azure OIDC secrets (required by `deploy-infra` and `deploy-nixos`)
+## Azure OIDC secrets (required by `ci-pr`, `deploy-infra`, and `deploy-nixos`)
 
-These four secrets are created by the [bootstrap script](../bootstrap/bootstrap.sh)
+These three secrets are created by the [bootstrap script](../bootstrap/bootstrap.sh)
 and enable workflows to authenticate to Azure via OpenID Connect — no
 long-lived password or certificate is stored.
 
@@ -17,7 +17,25 @@ long-lived password or certificate is stored.
 | `AZURE_CLIENT_ID`        | Application (client) ID of the Entra ID app registration |
 | `AZURE_TENANT_ID`        | Azure AD tenant ID                               |
 | `AZURE_SUBSCRIPTION_ID`  | Target Azure subscription ID                     |
-| `ADMIN_SSH_PUBLIC_KEY`   | SSH public key injected into VM `authorized_keys` |
+
+---
+
+## ADMIN_SSH_PUBLIC_KEY
+
+Your SSH public key, injected into VM `authorized_keys` by `deploy-infra` and
+read by `ci-pr` during the `az deployment sub what-if` step (the Bicep template
+accepts it as a parameter).  This is **not** related to OIDC — it is a static
+value from your local machine.
+
+| Secret Name              | Description                                      |
+|--------------------------|--------------------------------------------------|
+| `ADMIN_SSH_PUBLIC_KEY`   | Contents of your SSH public key file (e.g. `~/.ssh/id_ed25519.pub`) |
+
+Set it with:
+
+```bash
+gh secret set ADMIN_SSH_PUBLIC_KEY --repo poomnupong/poomlab-azure --body "$(cat ~/.ssh/id_ed25519.pub)"
+```
 
 ---
 
@@ -81,5 +99,5 @@ following the steps above and update the `GH_PAT` secret.
 | `AZURE_CLIENT_ID`        | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
 | `AZURE_TENANT_ID`        | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
 | `AZURE_SUBSCRIPTION_ID`  | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
-| `ADMIN_SSH_PUBLIC_KEY`   | `deploy-infra`                          | Your SSH public key                |
+| `ADMIN_SSH_PUBLIC_KEY`   | `deploy-infra`, `ci-pr`                 | Your SSH public key; used by Bicep template and what-if |
 | `GH_PAT`                 | `update-flake-lock`                     | Classic PAT, `repo` scope — enables `ci-pr.yml` to trigger on auto-generated PRs |
