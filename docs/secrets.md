@@ -61,22 +61,38 @@ user action and fires all the expected workflow triggers, including `ci-pr.yml`.
 
 | Token type | Required scope/permission |
 |---|---|
-| Classic PAT | `repo` (full repository access) |
-| Fine-grained PAT | **Contents** — Read & Write; **Pull requests** — Read & Write (scoped to this repository) |
+| Fine-grained PAT (**recommended**) | **Contents** — Read & Write; **Pull requests** — Read & Write (scoped to this repository only) |
+| Classic PAT | `repo` (full repository access — grants broader access than needed) |
 
 ### How to create and add GH_PAT
 
-1. Go to **GitHub → Settings → Developer settings → Personal access tokens**.
-2. Choose **Tokens (classic)** → **Generate new token (classic)**.
-   - Note: `update-flake-lock PAT` (or similar)
+A **fine-grained personal access token** is recommended over a classic PAT because
+it follows the principle of least privilege — permissions are scoped to only this
+repository and limited to the exact capabilities the workflow needs.
+
+#### Fine-grained PAT (recommended)
+
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
+2. Click **Generate new token**.
+   - Token name: `update-flake-lock PAT` (or similar)
    - Expiration: set to your preferred rotation period (e.g. 90 days)
-   - Scopes: ✅ `repo`
+   - Resource owner: your account (or the org owning this repo)
+   - Repository access: **Only select repositories** → choose this repository
+   - Permissions → Repository permissions:
+     - **Contents** — Read and Write
+     - **Pull requests** — Read and Write
 3. Click **Generate token** and copy the value immediately (it won't be shown again).
 4. In **this repository** go to **Settings → Secrets and variables → Actions**.
 5. Click **New repository secret**.
    - Name: `GH_PAT`
    - Value: paste the token
 6. Click **Add secret**.
+
+#### Classic PAT (alternative)
+
+If you prefer a classic token, generate one with the `repo` scope. Note that
+classic tokens grant access to **all** repositories you can access, so a
+fine-grained token is preferred for tighter security.
 
 Using the GitHub CLI:
 
@@ -100,4 +116,4 @@ following the steps above and update the `GH_PAT` secret.
 | `AZURE_TENANT_ID`        | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
 | `AZURE_SUBSCRIPTION_ID`  | `deploy-infra`, `deploy-nixos`, `ci-pr` | Created by bootstrap script        |
 | `ADMIN_SSH_PUBLIC_KEY`   | `deploy-infra`, `ci-pr`                 | Your SSH public key; used by Bicep template and what-if |
-| `GH_PAT`                 | `update-flake-lock`                     | Classic PAT, `repo` scope — enables `ci-pr.yml` to trigger on auto-generated PRs |
+| `GH_PAT`                 | `update-flake-lock`                     | Fine-grained PAT (Contents + Pull requests, R/W) — enables `ci-pr.yml` to trigger on auto-generated PRs |
