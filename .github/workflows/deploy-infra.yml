@@ -97,13 +97,12 @@ jobs:
           echo "⚠️  Found SecurityType=$SEC_TYPE on image definition — purging."
 
           # Delete all image versions first (required before deleting the definition)
-          VERSIONS=$(az sig image-version list \
+          az sig image-version list \
             --resource-group "$GALLERY_RG" \
             --gallery-name "$GALLERY_NAME" \
             --gallery-image-definition "$IMAGE_DEF" \
-            --query '[].name' -o tsv 2>/dev/null || true)
-
-          for v in $VERSIONS; do
+            --query '[].name' -o tsv 2>/dev/null | while IFS= read -r v; do
+            [ -z "$v" ] && continue
             echo "  Deleting image version $v …"
             az sig image-version delete \
               --resource-group "$GALLERY_RG" \
