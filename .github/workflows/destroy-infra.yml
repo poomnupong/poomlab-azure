@@ -1,0 +1,83 @@
+# Destroy Azure Infrastructure
+#
+# Deletes all resource groups created by deploy-infra.  Use this when you
+# need a clean slate — run deploy-infra afterwards to recreate everything.
+#
+# Manual-dispatch only; requires the "production" environment approval.
+
+name: destroy-infra
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy" to confirm deletion of all infrastructure'
+        required: true
+
+permissions:
+  id-token: write   # Required for OIDC
+  contents: read
+
+env:
+  DEPLOYMENT_LOCATION: southcentralus
+  PROJECT_NAME: plaz
+
+concurrency:
+  group: deploy-infra-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    name: Destroy Infrastructure
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.event.inputs.confirm == 'destroy'
+    steps:
+      - name: Validate confirmation
+        run: |
+          echo "✅ Confirmation received — proceeding with infrastructure destruction."
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete resource groups
+        run: |
+          set -euo pipefail
+
+          PROJECT="${{ env.PROJECT_NAME }}"
+          LOCATION="${{ env.DEPLOYMENT_LOCATION }}"
+
+          # Order matters: compute first (VMs hold references to network/gallery
+          # resources), then gallery, network, monitoring.
+          RESOURCE_GROUPS=(
+            "rg-${PROJECT}-compute-${LOCATION}"
+            "rg-${PROJECT}-gallery-${LOCATION}"
+            "rg-${PROJECT}-network-${LOCATION}"
+            "rg-${PROJECT}-monitoring-${LOCATION}"
+          )
+
+          for rg in "${RESOURCE_GROUPS[@]}"; do
+            if az group show --name "$rg" &>/dev/null; then
+              echo "🗑️  Deleting $rg …"
+              az group delete --name "$rg" --yes --no-wait
+            else
+              echo "⏭️  $rg does not exist — skipping."
+            fi
+          done
+
+          # Wait for all deletions to complete
+          echo ""
+          echo "⏳ Waiting for resource group deletions to complete …"
+          for rg in "${RESOURCE_GROUPS[@]}"; do
+            if az group show --name "$rg" &>/dev/null; then
+              echo "  Waiting for $rg …"
+              az group wait --name "$rg" --deleted --timeout 1800 || true
+            fi
+          done
+
+          echo ""
+          echo "✅ All resource groups deleted. Run deploy-infra to recreate."
