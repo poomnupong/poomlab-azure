@@ -90,6 +90,14 @@ Branch protection on `main` is strongly recommended to ensure all changes pass v
 
 ## NixOS Configuration
 
+> **GitOps-only:** All NixOS configuration — including `flake.lock` — is driven
+> exclusively through this Git repository. Never run `nix flake update` or
+> `nixos-rebuild` directly on a VM. The automated
+> [`update-flake-lock`](.github/workflows/update-flake-lock.yml) workflow runs
+> weekly (Monday 08:00 UTC) and on `workflow_dispatch`, generates a PR with the
+> refreshed lock file, and after merge `deploy-nixos` pushes the new config to
+> every VM. This applies to **gw1** and all future VMs.
+
 NixOS host configurations live under `nixos/` using a **per-VM subfolder pattern** so that adding a new VM is as simple as adding a new folder under `hosts/`. If you see `nixos-config/` elsewhere in this README, treat it as a historical reference; the canonical path and structure is `nixos/` as shown below:
 
 ```
