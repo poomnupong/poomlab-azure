@@ -28,7 +28,7 @@ env:
   PROJECT_NAME: plaz
 
 concurrency:
-  group: deploy-infra-${{ github.ref }}
+  group: infra-plaz-southcentralus
   cancel-in-progress: true
 
 jobs:

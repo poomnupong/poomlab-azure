@@ -64,9 +64,9 @@ resource imageDefinition 'Microsoft.Compute/galleries/images@2023-07-03' = {
         max: 128
       }
     }
-    // Note: SecurityType TrustedLaunchSupported is intentionally omitted.
+    // SecurityType is intentionally omitted (Standard security only).
     // NixOS uses systemd-boot which is not signed with Microsoft's UEFI CA;
-    // enabling Secure Boot would prevent the VM from booting.
+    // Trusted Launch / Secure Boot would prevent the VM from booting.
     // See: https://github.com/poomnupong/nixos-azimage-builder#security-type
     features: [
       {
