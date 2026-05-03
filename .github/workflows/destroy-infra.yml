@@ -62,24 +62,18 @@ jobs:
             "rg-${PROJECT}-monitoring-${LOCATION}"
           )
 
+          echo "⏳ Deleting resource groups sequentially in dependency order …"
           for rg in "${RESOURCE_GROUPS[@]}"; do
             if az group show --name "$rg" &>/dev/null; then
               echo "🗑️  Deleting $rg …"
               az group delete --name "$rg" --yes --no-wait
-            else
-              echo "⏭️  $rg does not exist — skipping."
-            fi
-          done
 
-          # Wait for all deletions to complete
-          echo ""
-          echo "⏳ Waiting for resource group deletions to complete …"
-          for rg in "${RESOURCE_GROUPS[@]}"; do
-            if az group show --name "$rg" &>/dev/null; then
-              echo "  Waiting for $rg …"
+              echo "  Waiting for $rg deletion to complete …"
               if ! az group wait --name "$rg" --deleted --timeout 1800; then
                 echo "::warning::Timed out waiting for $rg deletion"
               fi
+            else
+              echo "⏭️  $rg does not exist — skipping."
             fi
           done
 
