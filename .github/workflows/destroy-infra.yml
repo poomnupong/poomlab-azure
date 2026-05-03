@@ -22,6 +22,8 @@ env:
   DEPLOYMENT_LOCATION: southcentralus
   PROJECT_NAME: plaz
 
+# Shares the concurrency group with deploy-infra to prevent simultaneous
+# deploy and destroy operations on the same branch.
 concurrency:
   group: deploy-infra-${{ github.ref }}
   cancel-in-progress: false
@@ -75,7 +77,9 @@ jobs:
           for rg in "${RESOURCE_GROUPS[@]}"; do
             if az group show --name "$rg" &>/dev/null; then
               echo "  Waiting for $rg …"
-              az group wait --name "$rg" --deleted --timeout 1800 || true
+              if ! az group wait --name "$rg" --deleted --timeout 1800; then
+                echo "::warning::Timed out waiting for $rg deletion"
+              fi
             fi
           done
 
