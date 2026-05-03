@@ -64,18 +64,11 @@ resource imageDefinition 'Microsoft.Compute/galleries/images@2023-07-03' = {
         max: 128
       }
     }
-    // Note: SecurityType is set to TrustedLaunchSupported (not TrustedLaunch).
-    // This allows the image to be deployed with either Standard or Trusted Launch
-    // security, but does not enforce Secure Boot.  NixOS uses systemd-boot which
-    // is not signed with Microsoft's UEFI CA, so Secure Boot must not be enforced.
-    // Azure does not allow removing features once set on an existing image definition,
-    // so this feature must remain present.
+    // SecurityType is intentionally omitted (Standard security only).
+    // NixOS uses systemd-boot which is not signed with Microsoft's UEFI CA;
+    // Trusted Launch / Secure Boot would prevent the VM from booting.
     // See: https://github.com/poomnupong/nixos-azimage-builder#security-type
     features: [
-      {
-        name: 'SecurityType'
-        value: 'TrustedLaunchSupported'
-      }
       {
         name: 'DiskControllerTypes'
         value: 'SCSI, NVMe'

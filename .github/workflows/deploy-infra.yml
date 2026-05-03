@@ -69,6 +69,57 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Purge stale image definition (one-time migration)
+        run: |
+          set -euo pipefail
+          # Azure does not allow removing features from an existing gallery
+          # image definition.  The old definition carried SecurityType
+          # TrustedLaunchSupported which is incorrect for NixOS (unsigned
+          # systemd-boot).  Delete the definition (and its image versions)
+          # so the Bicep template can recreate it without that feature.
+          # This is a no-op once the old definition no longer exists.
+          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
+          GALLERY_NAME="gal_$(echo '${{ env.PROJECT_NAME }}' | tr '-' '_')"
+          IMAGE_DEF="nixos-azimage"
+
+          # Check if the image definition exists and has SecurityType
+          SEC_TYPE=$(az sig image-definition show \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            --query "features[?name=='SecurityType'].value | [0]" -o tsv 2>/dev/null || true)
+
+          if [ -z "$SEC_TYPE" ]; then
+            echo "Image definition does not exist or has no SecurityType feature — nothing to purge."
+            exit 0
+          fi
+
+          echo "⚠️  Found SecurityType=$SEC_TYPE on image definition — purging."
+
+          # Delete all image versions first (required before deleting the definition)
+          VERSIONS=$(az sig image-version list \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            --query '[].name' -o tsv 2>/dev/null || true)
+
+          for v in $VERSIONS; do
+            echo "  Deleting image version $v …"
+            az sig image-version delete \
+              --resource-group "$GALLERY_RG" \
+              --gallery-name "$GALLERY_NAME" \
+              --gallery-image-definition "$IMAGE_DEF" \
+              --gallery-image-version "$v"
+          done
+
+          echo "  Deleting image definition $IMAGE_DEF …"
+          az sig image-definition delete \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF"
+
+          echo "✅ Purge complete — Bicep will recreate the definition without SecurityType."
+
       - name: Deploy Gallery Infrastructure
         run: |
           az deployment sub create \
