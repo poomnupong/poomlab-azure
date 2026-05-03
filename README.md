@@ -92,7 +92,9 @@ Branch protection on `main` is strongly recommended to ensure all changes pass v
 
 > **GitOps-only:** All NixOS configuration — including `flake.lock` — is driven
 > exclusively through this Git repository. Never run `nix flake update` or
-> `nixos-rebuild` directly on a VM. The automated
+> `nixos-rebuild` manually on a VM; only GitHub Actions (via
+> [`deploy-nixos`](.github/workflows/deploy-nixos.yml)) should invoke
+> `nixos-rebuild` on VMs. The automated
 > [`update-flake-lock`](.github/workflows/update-flake-lock.yml) workflow runs
 > weekly (Monday 08:00 UTC) and on `workflow_dispatch`, generates a PR with the
 > refreshed lock file, and after merge `deploy-nixos` pushes the new config to

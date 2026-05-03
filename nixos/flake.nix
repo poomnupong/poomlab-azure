@@ -45,7 +45,8 @@
 
       # Future VMs: add entries here, e.g.:
       # vm2 = nixpkgs.lib.nixosSystem {
-      #   system = "x86_64-linux";
+      #   inherit system;
+      #   specialArgs = { inherit pkgs-stable; };
       #   modules = [
       #     ./hosts/vm2/default.nix
       #     ./hosts/vm2/hardware.nix

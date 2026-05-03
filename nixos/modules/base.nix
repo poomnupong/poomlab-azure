@@ -3,7 +3,7 @@
 # Includes: admin user, SSH authorized keys, Nix daemon settings,
 # locale, timezone, and basic packages.
 
-{ config, pkgs, pkgs-stable, ... }:
+{ config, pkgs, pkgs-stable ? pkgs, ... }:
 
 {
   # ── Dynamic linker compatibility ────────────────────────────────────
