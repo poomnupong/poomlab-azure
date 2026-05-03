@@ -3,7 +3,7 @@
 # Includes: admin user, SSH authorized keys, Nix daemon settings,
 # locale, timezone, and basic packages.
 
-{ config, pkgs, ... }:
+{ config, pkgs, pkgs-stable, ... }:
 
 {
   # ── Dynamic linker compatibility ────────────────────────────────────
@@ -26,13 +26,16 @@
   };
 
   # ── System packages ─────────────────────────────────────────────────
-  environment.systemPackages = with pkgs; [
+  environment.systemPackages = (with pkgs; [
     vim
     git
     curl
     htop
     jq
-  ];
+    tailscale
+  ]) ++ (with pkgs-stable; [
+    tmux
+  ]);
 
   # ── Locale / Timezone ────────────────────────────────────────────────
   # TODO: adjust timezone to match your Azure region / preference.

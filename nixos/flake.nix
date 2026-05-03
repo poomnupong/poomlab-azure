@@ -17,9 +17,15 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs-stable.url = "github:NixOS/nixpkgs/nixos-24.11";
   };
 
-  outputs = { self, nixpkgs, ... }: {
+  outputs = { self, nixpkgs, nixpkgs-stable, ... }:
+    let
+      system = "x86_64-linux";
+      pkgs-stable = import nixpkgs-stable { inherit system; };
+    in
+    {
 
     # ── Standard NixOS configurations ────────────────────────────────
     # Each entry is consumed by `nixos-rebuild switch --flake .#<name>`.
@@ -29,7 +35,8 @@
 
       # ── gw1: NixOS gateway / NVA VM ──────────────────────────────
       gw1 = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
+        inherit system;
+        specialArgs = { inherit pkgs-stable; };
         modules = [
           ./hosts/gw1/default.nix
           ./hosts/gw1/hardware.nix
