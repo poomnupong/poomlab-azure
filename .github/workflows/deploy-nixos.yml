@@ -25,6 +25,9 @@ on:
     paths:
       - 'nixos/**'
       - '.github/workflows/deploy-nixos.yml'
+  workflow_run:
+    workflows: ["deploy-infra"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -42,6 +45,9 @@ jobs:
   validate:
     name: Validate NixOS
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -109,8 +115,8 @@ jobs:
     environment: production
     if: >
       needs.validate.result == 'success' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (needs.filter.outputs.gw1 == 'true' || github.event_name == 'workflow_dispatch')
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run') &&
+      (needs.filter.outputs.gw1 == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run')
     steps:
       - name: Azure Login (OIDC)
         uses: azure/login@v2

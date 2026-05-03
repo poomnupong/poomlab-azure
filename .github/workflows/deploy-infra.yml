@@ -76,7 +76,7 @@ jobs:
             --template-file infra/gallery.bicep \
             --parameters location="${{ env.DEPLOYMENT_LOCATION }}" \
                          projectName="${{ env.PROJECT_NAME }}" \
-            --name "gallery-${{ github.run_id }}"
+            --name "gallery-${{ env.PROJECT_NAME }}"
 
       - name: Stage NixOS Image Version
         id: stage
@@ -89,13 +89,13 @@ jobs:
 
           # ── Gallery info from deployment outputs ──────────────────────
           GALLERY_RG=$(az deployment sub show \
-            --name "gallery-${{ github.run_id }}" \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.galleryResourceGroup.value' -o tsv)
           GALLERY_NAME=$(az deployment sub show \
-            --name "gallery-${{ github.run_id }}" \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.galleryName.value' -o tsv)
           IMAGE_DEF=$(az deployment sub show \
-            --name "gallery-${{ github.run_id }}" \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.imageDefinitionName.value' -o tsv)
 
           echo "Gallery RG:  $GALLERY_RG"
@@ -202,6 +202,42 @@ jobs:
             --query id -o tsv)
 
           echo "✅ Image version created: $VERSION"
+
+          # ── Wait for replication to complete ─────────────────────────
+          # az sig image-version create returns before the image is visible
+          # to ARM's deployment service. Poll until replication completes.
+          echo "Waiting for image version replication..."
+          prov_state=""
+          repl_state=""
+          for i in $(seq 1 30); do
+            prov_state=$(az sig image-version show \
+              --resource-group "$GALLERY_RG" \
+              --gallery-name "$GALLERY_NAME" \
+              --gallery-image-definition "$IMAGE_DEF" \
+              --gallery-image-version "$VERSION" \
+              --query provisioningState -o tsv)
+            repl_state=$(az sig image-version show \
+              --resource-group "$GALLERY_RG" \
+              --gallery-name "$GALLERY_NAME" \
+              --gallery-image-definition "$IMAGE_DEF" \
+              --gallery-image-version "$VERSION" \
+              --expand ReplicationStatus \
+              --query 'replicationStatus.aggregatedState' -o tsv 2>/dev/null || echo "Unknown")
+            echo "  attempt $i: provisioningState=$prov_state aggregatedState=$repl_state"
+            if [ "$prov_state" = "Succeeded" ] && [ "$repl_state" = "Completed" ]; then
+              break
+            elif [ "$prov_state" = "Failed" ]; then
+              echo "::error::Image version replication failed"
+              exit 1
+            fi
+            sleep 30
+          done
+          if [ "$prov_state" != "Succeeded" ] || [ "$repl_state" != "Completed" ]; then
+            echo "::error::Image version replication timed out"
+            exit 1
+          fi
+          echo "Image version replicated successfully"
+
           echo "imageVersion=$VERSION" >> "$GITHUB_OUTPUT"
 
           # ── Cleanup staging disk ──────────────────────────────────────
@@ -245,19 +281,19 @@ jobs:
 
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
           GALLERY_NAME=$(az deployment sub show \
-            --name "gallery-${{ github.run_id }}" \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
             --query properties.outputs.galleryName.value -o tsv)
           IMAGE_DEF=$(az deployment sub show \
-            --name "gallery-${{ github.run_id }}" \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
             --query properties.outputs.imageDefinitionName.value -o tsv)
 
           if [ -z "${GALLERY_NAME:-}" ]; then
-            echo "::error::Failed to resolve galleryName from deployment outputs for gallery-${{ github.run_id }}"
+            echo "::error::Failed to resolve galleryName from deployment outputs for gallery-${{ env.PROJECT_NAME }}"
             exit 1
           fi
 
           if [ -z "${IMAGE_DEF:-}" ]; then
-            echo "::error::Failed to resolve imageDefinitionName from deployment outputs for gallery-${{ github.run_id }}"
+            echo "::error::Failed to resolve imageDefinitionName from deployment outputs for gallery-${{ env.PROJECT_NAME }}"
             exit 1
           fi
           echo "Looking up image version ${IMAGE_VERSION} …"
@@ -332,15 +368,25 @@ jobs:
         env:
           ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
         run: |
-          az deployment sub create \
+          if ! az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --template-file infra/main.bicep \
             --parameters infra/environments/${{ github.event.inputs.environment || 'plaz' }}.bicepparam \
-            --name "deploy-${{ github.run_id }}"
+            --name "deploy-${{ env.PROJECT_NAME }}"; then
+            echo "::error::Bicep deployment failed. Fetching error details..."
+            az deployment sub show \
+              --name "deploy-${{ env.PROJECT_NAME }}" \
+              --query 'properties.error' -o json || true
+            az deployment operation sub list \
+              --name "deploy-${{ env.PROJECT_NAME }}" \
+              --query "[?properties.statusCode != 'OK'].{resource: properties.targetResource.resourceName, status: properties.statusCode, message: properties.statusMessage.error.message}" \
+              -o table || true
+            exit 1
+          fi
 
       - name: Show Outputs
         run: |
           az deployment sub show \
-            --name "deploy-${{ github.run_id }}" \
+            --name "deploy-${{ env.PROJECT_NAME }}" \
             --query properties.outputs \
             --output table
