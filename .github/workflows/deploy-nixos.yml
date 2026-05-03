@@ -185,6 +185,7 @@ jobs:
           # without the NixOS system PATH. Source the profile so nixos-rebuild
           # and other NixOS tools are available.
           REMOTE_SCRIPT='
+          set -e
           source /etc/profile
           export NIX_CONFIG="access-tokens = github.com=${GITHUB_TOKEN}"
           nixos-rebuild switch --flake "github:'"${{ github.repository }}"'#gw1" 2>&1
@@ -205,12 +206,13 @@ jobs:
           # in the response indicates the remote script failed.
           STDERR=$(echo "$OUTPUT" | jq -r '.value[0].message' | sed -n '/\[stderr\]/,$ p' | tail -n +2)
           if [ -n "$STDERR" ]; then
-            echo "::error::Remote script produced stderr output — rebuild may have failed"
+            echo "::error::Remote script failed with stderr output. See log above."
             exit 1
           fi
-          # Also check stdout for obvious failure signals
+          # Also check stdout for clear failure signals (command not found means
+          # the environment is broken; "FAILED" is nixos-rebuild's failure marker).
           STDOUT=$(echo "$OUTPUT" | jq -r '.value[0].message' | sed -n '/\[stdout\]/,/\[stderr\]/ p')
-          if echo "$STDOUT" | grep -qi "command not found\|error:\|fatal:"; then
-            echo "::error::Remote script failed. See output above."
+          if echo "$STDOUT" | grep -qi "command not found"; then
+            echo "::error::Remote script failed — a required command was not found."
             exit 1
           fi
