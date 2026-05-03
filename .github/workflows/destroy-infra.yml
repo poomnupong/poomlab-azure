@@ -22,10 +22,11 @@ env:
   DEPLOYMENT_LOCATION: southcentralus
   PROJECT_NAME: plaz
 
-# Shares the concurrency group with deploy-infra to prevent simultaneous
-# deploy and destroy operations on the same branch.
+# Static concurrency group shared with deploy-infra — all deploy/destroy
+# operations target the same hardcoded subscription resources regardless of
+# branch, so serialization must be branch-independent.
 concurrency:
-  group: deploy-infra-${{ github.ref }}
+  group: infra-plaz-southcentralus
   cancel-in-progress: false
 
 jobs:
@@ -63,6 +64,7 @@ jobs:
           )
 
           echo "⏳ Deleting resource groups sequentially in dependency order …"
+          FAILED=0
           for rg in "${RESOURCE_GROUPS[@]}"; do
             if az group show --name "$rg" &>/dev/null; then
               echo "🗑️  Deleting $rg …"
@@ -70,12 +72,19 @@ jobs:
 
               echo "  Waiting for $rg deletion to complete …"
               if ! az group wait --name "$rg" --deleted --timeout 1800; then
-                echo "::warning::Timed out waiting for $rg deletion"
+                echo "::error::Timed out waiting for $rg deletion — resource group may still exist"
+                FAILED=1
               fi
             else
               echo "⏭️  $rg does not exist — skipping."
             fi
           done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "::error::One or more resource groups failed to delete within the timeout. Do NOT run deploy-infra until deletion completes."
+            exit 1
+          fi
 
           echo ""
           echo "✅ All resource groups deleted. Run deploy-infra to recreate."
