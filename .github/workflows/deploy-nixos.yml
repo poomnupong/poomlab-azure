@@ -181,15 +181,36 @@ jobs:
           # Mask the token so it does not appear in the Actions log.
           echo "::add-mask::$GH_TOKEN"
 
-          # az vm run-command invoke exits non-zero if the script fails, so
-          # the command's own exit code is the reliable signal.
+          # The Azure VM agent (waagent) runs scripts in a minimal environment
+          # without the NixOS system PATH. Source the profile so nixos-rebuild
+          # and other NixOS tools are available.
+          REMOTE_SCRIPT='
+          source /etc/profile
+          export NIX_CONFIG="access-tokens = github.com=${GITHUB_TOKEN}"
+          nixos-rebuild switch --flake "github:'"${{ github.repository }}"'#gw1" 2>&1
+          '
+
           OUTPUT=$(az vm run-command invoke \
             --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
             --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
             --command-id RunShellScript \
-            --scripts "export NIX_CONFIG=\"access-tokens = github.com=\${GITHUB_TOKEN}\" && nixos-rebuild switch --flake \"github:${{ github.repository }}#gw1\" 2>&1" \
+            --scripts "$REMOTE_SCRIPT" \
             --parameters "GITHUB_TOKEN=$GH_TOKEN" \
             --output json)
 
           # Extract and print the command output so it is visible in the Actions log.
           echo "$OUTPUT" | jq -r '.value[0].message'
+
+          # Detect failure: az vm run-command invoke always exits 0 but stderr
+          # in the response indicates the remote script failed.
+          STDERR=$(echo "$OUTPUT" | jq -r '.value[0].message' | sed -n '/\[stderr\]/,$ p' | tail -n +2)
+          if [ -n "$STDERR" ]; then
+            echo "::error::Remote script produced stderr output — rebuild may have failed"
+            exit 1
+          fi
+          # Also check stdout for obvious failure signals
+          STDOUT=$(echo "$OUTPUT" | jq -r '.value[0].message' | sed -n '/\[stdout\]/,/\[stderr\]/ p')
+          if echo "$STDOUT" | grep -qi "command not found\|error:\|fatal:"; then
+            echo "::error::Remote script failed. See output above."
+            exit 1
+          fi
