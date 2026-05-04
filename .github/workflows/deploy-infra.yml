@@ -706,14 +706,36 @@ jobs:
             --destination-port-range 22 \
             --output none
 
+          # ── Wait for RunCommand extension to become idle ───────────────────
+          # If the comin status check (above) was killed by `timeout`, the
+          # VM-side RunCommand extension keeps executing.  Poll the VM
+          # instance-view until the extension reports a terminal status
+          # (Succeeded/Failed) or until we hit a generous 15-min ceiling.
+          echo "Waiting for any prior RunCommand extension to finish on $VM_NAME..."
+          RC_WAIT_OK=false
+          for rc_wait in $(seq 1 30); do
+            RC_STATUS=$(az vm get-instance-view \
+              --resource-group "$RG" --name "$VM_NAME" \
+              --query "instanceView.extensions[?name=='RunCommandLinux'].statuses[0].code" \
+              --output tsv 2>/dev/null || echo "unknown")
+            if echo "$RC_STATUS" | grep -qi "succeeded\|failed\|unknown"; then
+              echo "RunCommand extension idle (status: $RC_STATUS) after $((rc_wait * 30 - 30))s wait."
+              RC_WAIT_OK=true
+              break
+            fi
+            echo "RunCommand extension still busy (status: $RC_STATUS), waiting 30s ($rc_wait/30)..."
+            sleep 30
+          done
+          if [ "$RC_WAIT_OK" != "true" ]; then
+            echo "::warning::RunCommand extension did not become idle after 15 min; proceeding anyway."
+          fi
+
           # ── Inject SSH key, grant bootstrap sudoers, capture VM host key ─────
           # Runs as root via Azure Run Command — single blocking call (~1 min).
           # Outputs the VM's ed25519 host key on stdout for strict host-key pinning.
           #
-          # Retry with back-off: If the previous run-command (comin status
-          # check) timed out on the client side, the VM-side extension may
-          # still be executing. Azure returns HTTP 409 Conflict until it
-          # finishes.  We retry up to 10 times (30 s apart ≈ 5 min window).
+          # Retry with back-off: If the extension is STILL busy (edge case),
+          # retry up to 20 times (45 s apart ≈ 15 min window).
           echo "Injecting ephemeral SSH key and bootstrap sudoers into $VM_NAME..."
           INJECT_SCRIPT=$(printf '%s\n' \
             "mkdir -p /home/azureuser/.ssh" \
@@ -726,14 +748,14 @@ jobs:
           INJECT_OUT=$(mktemp)
           INJECT_ERR=$(mktemp)
           INJECT_OK=false
-          for attempt in $(seq 1 10); do
+          for attempt in $(seq 1 20); do
             if .github/scripts/az-run-command.sh "$RG" "$VM_NAME" "$INJECT_SCRIPT" > "$INJECT_OUT" 2>"$INJECT_ERR"; then
               INJECT_OK=true
               break
             fi
             if grep -qi "Conflict\|execution is in progress" "$INJECT_ERR"; then
-              echo "Run command still in progress on VM, waiting 30s (attempt $attempt/10)..."
-              sleep 30
+              echo "Run command still in progress on VM, waiting 45s (attempt $attempt/20)..."
+              sleep 45
             else
               cat "$INJECT_ERR" >&2
               rm -f "$INJECT_ERR"
@@ -742,7 +764,7 @@ jobs:
           done
           rm -f "$INJECT_ERR"
           if [ "$INJECT_OK" != "true" ]; then
-            echo "::error::Failed to inject SSH key after 10 retries (run-command conflict)"
+            echo "::error::Failed to inject SSH key after 20 retries (run-command conflict)"
             exit 1
           fi
 
