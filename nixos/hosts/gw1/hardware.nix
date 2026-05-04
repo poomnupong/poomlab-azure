@@ -15,6 +15,7 @@
   # with vmGeneration = "v2"), which installs GRUB-EFI as a removable
   # bootloader on the ESP. Switching to systemd-boot here would require
   # a one-time `--install-bootloader` rebuild and break first-boot deploys.
+  boot.loader.systemd-boot.enable = false;
   boot.loader.grub = {
     enable = true;
     efiSupport = true;
