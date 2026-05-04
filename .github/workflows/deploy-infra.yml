@@ -587,7 +587,7 @@ jobs:
           # (handled by the shared helper).
           BOOTSTRAP_OUT=$(mktemp)
           .github/scripts/az-run-command.sh "$RG" "$VM_NAME" \
-            $'set -euo pipefail\nsource /etc/profile\n\n# Write PAT for Comin (temporary bootstrap — agenix takes over after first rebuild)\nmkdir -p /run/agenix\nprintf "%s" "${GITHUB_PAT}" > /run/agenix/comin-github-token\nchmod 0400 /run/agenix/comin-github-token\n\n# First nixos-rebuild installs Comin + agenix. After this, Comin is self-sustaining.\nexport NIX_CONFIG="access-tokens = github.com=${GITHUB_PAT}"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "BOOTSTRAP_SUCCESS"' \
+            $'set -eo pipefail\nset +u; source /etc/profile; set -u\n\n# Write PAT for Comin (temporary bootstrap — agenix takes over after first rebuild)\nmkdir -p /run/agenix\nprintf "%s" "${GITHUB_PAT}" > /run/agenix/comin-github-token\nchmod 0400 /run/agenix/comin-github-token\n\n# First nixos-rebuild installs Comin + agenix. After this, Comin is self-sustaining.\nexport NIX_CONFIG="access-tokens = github.com=${GITHUB_PAT}"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "BOOTSTRAP_SUCCESS"' \
             --parameters "GITHUB_PAT=$GH_PAT" \
             | tee "$BOOTSTRAP_OUT"
 
