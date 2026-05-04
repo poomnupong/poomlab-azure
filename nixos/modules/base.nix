@@ -3,7 +3,7 @@
 # Includes: admin user, SSH authorized keys, Nix daemon settings,
 # locale, timezone, and basic packages.
 
-{ config, pkgs, pkgs-stable ? pkgs, ... }:
+{ config, pkgs, pkgs-unstable, ... }:
 
 {
   # ── Dynamic linker compatibility ────────────────────────────────────
@@ -26,16 +26,17 @@
   };
 
   # ── System packages ─────────────────────────────────────────────────
+  # Default pkgs = stable (nixos-25.11). Use pkgs-unstable for bleeding-edge.
   environment.systemPackages = (with pkgs; [
     vim
     git
     curl
     htop
     jq
-    tailscale
-  ]) ++ (with pkgs-stable; [
     tmux
-  ]);
+  ]) ++ [
+    pkgs-unstable.tailscale
+  ];
 
   # ── Locale / Timezone ────────────────────────────────────────────────
   # TODO: adjust timezone to match your Azure region / preference.
