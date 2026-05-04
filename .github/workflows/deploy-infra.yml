@@ -709,6 +709,11 @@ jobs:
           # ── Inject SSH key, grant bootstrap sudoers, capture VM host key ─────
           # Runs as root via Azure Run Command — single blocking call (~1 min).
           # Outputs the VM's ed25519 host key on stdout for strict host-key pinning.
+          #
+          # Retry with back-off: If the previous run-command (comin status
+          # check) timed out on the client side, the VM-side extension may
+          # still be executing. Azure returns HTTP 409 Conflict until it
+          # finishes.  We retry up to 10 times (30 s apart ≈ 5 min window).
           echo "Injecting ephemeral SSH key and bootstrap sudoers into $VM_NAME..."
           INJECT_SCRIPT=$(printf '%s\n' \
             "mkdir -p /home/azureuser/.ssh" \
@@ -719,7 +724,27 @@ jobs:
             "chmod 440 /etc/sudoers.d/bootstrap-temp" \
             "cat /etc/ssh/ssh_host_ed25519_key.pub")
           INJECT_OUT=$(mktemp)
-          .github/scripts/az-run-command.sh "$RG" "$VM_NAME" "$INJECT_SCRIPT" > "$INJECT_OUT"
+          INJECT_ERR=$(mktemp)
+          INJECT_OK=false
+          for attempt in $(seq 1 10); do
+            if .github/scripts/az-run-command.sh "$RG" "$VM_NAME" "$INJECT_SCRIPT" > "$INJECT_OUT" 2>"$INJECT_ERR"; then
+              INJECT_OK=true
+              break
+            fi
+            if grep -qi "Conflict\|execution is in progress" "$INJECT_ERR"; then
+              echo "Run command still in progress on VM, waiting 30s (attempt $attempt/10)..."
+              sleep 30
+            else
+              cat "$INJECT_ERR" >&2
+              rm -f "$INJECT_ERR"
+              exit 1
+            fi
+          done
+          rm -f "$INJECT_ERR"
+          if [ "$INJECT_OK" != "true" ]; then
+            echo "::error::Failed to inject SSH key after 10 retries (run-command conflict)"
+            exit 1
+          fi
 
           # Extract VM host key and build a known_hosts file for strict verification
           HOST_KEY_DATA=$(grep '^ssh-ed25519 ' "$INJECT_OUT" | head -1 | awk '{print $1, $2}')

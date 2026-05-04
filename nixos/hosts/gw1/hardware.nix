@@ -55,6 +55,13 @@
 
   swapDevices = [ ];
 
+  # ── Azure Linux Agent (waagent) ──────────────────────────────────────
+  # The base image (nixos-azimage-builder / azure-image.nix) ships with
+  # waagent enabled.  We must re-declare it here so that after
+  # nixos-rebuild switch the agent stays enabled — otherwise Azure
+  # loses VM-agent heartbeat and extensions like Run Command break.
+  virtualisation.azure.agent.enable = true;
+
   # ── Azure-specific networking ────────────────────────────────────────
   # Hyper-V network interface drivers
   networking.useDHCP = lib.mkDefault true;
