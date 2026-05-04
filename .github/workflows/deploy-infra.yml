@@ -465,3 +465,119 @@ jobs:
           fi
 
           echo "✅ Comin bootstrap complete. Future config changes will be pulled automatically."
+
+      # ── Auto-populate agenix keys and encrypt secrets ────────────────
+      # After bootstrap, extract the VM's SSH host key, convert to an age
+      # public key, encrypt secrets, and commit back to the repo. This
+      # makes the entire setup hands-free — no manual ssh-keyscan or
+      # agenix -e needed.
+      - name: Auto-setup agenix secrets for gw1
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$GH_PAT"
+
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+
+          # ── Install age + ssh-to-age ──────────────────────────────────
+          sudo apt-get update -qq && sudo apt-get install -y -qq age
+          go install github.com/Mic92/ssh-to-age/cmd/ssh-to-age@latest
+          export PATH="$HOME/go/bin:$PATH"
+
+          # ── Extract VM SSH host key → age public key ──────────────────
+          OUTPUT=$(az vm run-command invoke \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts 'cat /etc/ssh/ssh_host_ed25519_key.pub' \
+            --output json)
+          VM_SSH_PUBKEY=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message' | head -1 | xargs)
+
+          if [ -z "$VM_SSH_PUBKEY" ] || ! echo "$VM_SSH_PUBKEY" | grep -q "ssh-ed25519"; then
+            echo "::error::Failed to extract VM SSH ed25519 public key"
+            exit 1
+          fi
+
+          VM_AGE_PUBKEY=$(echo "$VM_SSH_PUBKEY" | ssh-to-age)
+          echo "VM age public key: $VM_AGE_PUBKEY"
+
+          # ── Derive admin age public key (if ed25519) ──────────────────
+          ADMIN_AGE_PUBKEY=""
+          if echo "$ADMIN_SSH_PUBLIC_KEY" | grep -q "ssh-ed25519"; then
+            ADMIN_AGE_PUBKEY=$(echo "$ADMIN_SSH_PUBLIC_KEY" | ssh-to-age)
+            echo "Admin age public key: $ADMIN_AGE_PUBKEY"
+          else
+            echo "::notice::ADMIN_SSH_PUBLIC_KEY is not ed25519 — admin key not added to agenix recipients. You can add it manually later."
+          fi
+
+          # ── Check if already up to date ───────────────────────────────
+          if grep -qF "$VM_AGE_PUBKEY" nixos/secrets/secrets.nix 2>/dev/null; then
+            echo "Age keys already up to date in secrets.nix. Skipping."
+            exit 0
+          fi
+
+          # ── Update secrets.nix with real keys ─────────────────────────
+          if [ -n "$ADMIN_AGE_PUBKEY" ]; then
+            ADMIN_LINE="  admin = \"$ADMIN_AGE_PUBKEY\";"
+            ALL_KEYS_LINE="  allKeys = [ admin ] ++ allSystems;"
+          else
+            ADMIN_LINE="  # admin key not available (ADMIN_SSH_PUBLIC_KEY is not ed25519)"
+            ALL_KEYS_LINE="  allKeys = allSystems;"
+          fi
+
+          cat > nixos/secrets/secrets.nix << SECRETS_EOF
+          # secrets.nix — Agenix recipients list
+          #
+          # AUTO-POPULATED by deploy-infra.yml — do not edit the key values manually.
+          # To rotate secrets, see docs/comin-deployment.md.
+          #
+          # Admin key derived from: ADMIN_SSH_PUBLIC_KEY GitHub secret
+          # VM keys extracted from: SSH host keys via az vm run-command
+
+          let
+            # ── Admin keys ──────────────────────────────────────────────────
+          $ADMIN_LINE
+
+            # ── VM host keys ────────────────────────────────────────────────
+            gw1 = "$VM_AGE_PUBKEY";
+
+            allSystems = [ gw1 ];
+          $ALL_KEYS_LINE
+          in
+          {
+            "comin-github-token.age".publicKeys = allKeys;
+            "tailscale-authkey.age".publicKeys = allKeys;
+          }
+          SECRETS_EOF
+
+          # Remove leading whitespace from heredoc (caused by YAML indentation)
+          sed -i 's/^          //' nixos/secrets/secrets.nix
+
+          # ── Encrypt secrets with age ──────────────────────────────────
+          AGE_ARGS="-r $VM_AGE_PUBKEY"
+          if [ -n "$ADMIN_AGE_PUBKEY" ]; then
+            AGE_ARGS="$AGE_ARGS -r $ADMIN_AGE_PUBKEY"
+          fi
+
+          # Encrypt GH_PAT → comin-github-token.age
+          printf '%s' "$GH_PAT" | age $AGE_ARGS -a > nixos/secrets/comin-github-token.age
+
+          # Encrypt empty placeholder → tailscale-authkey.age
+          # (will be replaced with a real key via agenix -e when available)
+          printf 'PLACEHOLDER_REPLACE_WITH_REAL_KEY' | age $AGE_ARGS -a > nixos/secrets/tailscale-authkey.age
+
+          # ── Commit and push ───────────────────────────────────────────
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add nixos/secrets/
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: auto-populate agenix keys and secrets for gw1 [skip ci]"
+            git push "https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git" HEAD:main
+            echo "✅ Agenix keys and secrets committed. Comin will pick them up on next poll."
+          fi

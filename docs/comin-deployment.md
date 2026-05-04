@@ -78,7 +78,8 @@ is active on each VM.
   as `.age` files in `nixos/secrets/`.
 - The encryption recipients are listed in `nixos/secrets/secrets.nix`.
 - Each VM decrypts secrets using its SSH host key (converted to an age key).
-- You (the admin) also have an age key for re-encrypting.
+- You (the admin) also have an age key for re-encrypting (if your SSH key
+  is ed25519).
 
 ### File Structure
 
@@ -89,33 +90,23 @@ nixos/secrets/
 └── tailscale-authkey.age    # Encrypted Tailscale auth key
 ```
 
-### Initial Setup
+### Initial Setup — Fully Automated
 
-1. **Get your admin age key:**
-   ```bash
-   # From your SSH key
-   nix run nixpkgs#ssh-to-age -- < ~/.ssh/id_ed25519.pub
-   ```
+**No manual steps are required.** When `deploy-infra` creates a VM:
 
-2. **Get the VM's age key** (after first `deploy-infra`):
-   ```bash
-   ssh-keyscan <vm-ip> 2>/dev/null | nix run nixpkgs#ssh-to-age
-   ```
+1. The bootstrap step writes the PAT and runs `nixos-rebuild switch`
+   (installs Comin + agenix).
+2. The auto-setup step then:
+   - Extracts the VM's SSH host ed25519 public key via `az vm run-command`
+   - Converts it to an age public key using `ssh-to-age`
+   - Derives the admin's age public key from `ADMIN_SSH_PUBLIC_KEY` (if ed25519)
+   - Updates `nixos/secrets/secrets.nix` with the real keys
+   - Encrypts `GH_PAT` → `comin-github-token.age` using `age`
+   - Commits and pushes to `main`
+3. Comin (now running on the VM) pulls the commit with properly encrypted
+   secrets. Agenix decrypts them using the VM's SSH host key.
 
-3. **Update `nixos/secrets/secrets.nix`** with both keys.
-
-4. **Create encrypted secrets:**
-   ```bash
-   cd nixos
-   # Set AGENIX_IDENTITY to your SSH key for decryption
-   export AGENIX_IDENTITY=~/.ssh/id_ed25519
-
-   # Create each secret (opens $EDITOR, paste value, save)
-   agenix -e secrets/comin-github-token.age
-   agenix -e secrets/tailscale-authkey.age
-   ```
-
-5. **Commit and push** the `.age` files.
+**The only manual prerequisite:** set the `GH_PAT` repository secret.
 
 ### Rotating a Secret (100% Git Workflow)
 
@@ -135,6 +126,10 @@ nixos/secrets/
 3. Comin pulls the new commit → agenix decrypts on the VM → services
    restart with the new secret.
 
+> **Note:** To use `agenix -e` locally, you need your SSH private key
+> (`~/.ssh/id_ed25519`) and `ADMIN_SSH_PUBLIC_KEY` must be ed25519. Set
+> `AGENIX_IDENTITY=~/.ssh/id_ed25519` if needed.
+
 ### Rotating the GitHub PAT
 
 1. Generate a new fine-grained PAT on GitHub with these permissions:
@@ -145,28 +140,27 @@ nixos/secrets/
    ```bash
    gh secret set GH_PAT --body "<new-token>"
    ```
-3. Update the agenix-encrypted token:
+3. **Option A (hands-free):** Run `deploy-infra` — it will re-encrypt the PAT
+   automatically and commit the updated `.age` file.
+4. **Option B (git workflow):** Update the agenix-encrypted token locally:
    ```bash
    cd nixos && agenix -e secrets/comin-github-token.age
    # Paste the new PAT, save
    ```
-4. Commit, push, merge. Comin picks it up automatically.
+   Commit, push, merge. Comin picks it up automatically.
 
 ### Rotating the VM's Age Key (Rare)
 
 Only needed if a VM is compromised or rebuilt:
 
 1. Rebuild VM via `deploy-infra` (new SSH host keys generated).
-2. Extract the new age public key:
+2. `deploy-infra` automatically extracts the new age key, re-encrypts
+   secrets, and commits to the repo. **No manual steps needed.**
+3. If you prefer manual control:
    ```bash
    ssh-keyscan <vm-ip> 2>/dev/null | nix run nixpkgs#ssh-to-age
    ```
-3. Update `nixos/secrets/secrets.nix` with the new public key.
-4. Re-encrypt all secrets:
-   ```bash
-   cd nixos && agenix -r
-   ```
-5. Commit, push, merge. Comin pulls and decrypts with the new key.
+   Update `nixos/secrets/secrets.nix`, run `agenix -r`, commit and push.
 
 ## Status Reporting
 

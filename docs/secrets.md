@@ -103,12 +103,16 @@ repository and limited to the exact capabilities the workflow needs.
    - Name: `GH_PAT`
    - Value: paste the token
 6. Click **Add secret**.
-7. **Also update the agenix-encrypted token** (so Comin on VMs uses the same PAT):
-   ```bash
-   cd nixos && agenix -e secrets/comin-github-token.age
-   # Paste the PAT, save
-   git add secrets/comin-github-token.age && git commit -m "chore: update comin token" && git push
-   ```
+
+> **That's it.** When `deploy-infra` runs, it automatically encrypts the PAT
+> with agenix for each VM and commits the `.age` file to the repo. No manual
+> `agenix -e` step is needed for initial setup.
+>
+> For manual rotation later, you can also update the encrypted token locally:
+> ```bash
+> cd nixos && agenix -e secrets/comin-github-token.age
+> git add secrets/comin-github-token.age && git commit -m "chore: update comin token" && git push
+> ```
 
 #### Classic PAT (alternative)
 

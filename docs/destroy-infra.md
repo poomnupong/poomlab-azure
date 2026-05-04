@@ -79,22 +79,12 @@ deletion completes (30-minute timeout per group).
    ```bash
    gh workflow run deploy-infra --field environment=plaz
    ```
-   This will stage the NixOS image, deploy Bicep, and bootstrap Comin.
+   This will stage the NixOS image, deploy Bicep, bootstrap Comin, and
+   **automatically extract the new VM's age key, re-encrypt secrets, and
+   commit to the repo.** No manual steps needed.
 
-2. **Extract the new VM age key** (the rebuilt VM has new SSH host keys):
-   ```bash
-   ssh-keyscan <new-vm-ip> 2>/dev/null | nix run nixpkgs#ssh-to-age
-   ```
-
-3. **Update `nixos/secrets/secrets.nix`** with the new age public key.
-
-4. **Re-encrypt all secrets:**
-   ```bash
-   cd nixos && agenix -r
-   ```
-
-5. **Commit and push** — Comin (freshly bootstrapped) picks up the
-   re-encrypted secrets automatically.
+2. Comin (freshly bootstrapped) picks up the re-encrypted secrets
+   automatically on its next poll cycle (~60 seconds).
 
 ---
 
