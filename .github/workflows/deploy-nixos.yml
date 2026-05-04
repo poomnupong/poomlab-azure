@@ -183,28 +183,37 @@ jobs:
 
           # az vm run-command invoke always exits 0 regardless of remote script
           # outcome. We must parse the JSON response to detect failures.
+          # NOTE: stderr is NOT redirected into stdout so that the Azure Run
+          # Command JSON separates stdout (StdOut) from stderr (StdErr).
           OUTPUT=$(az vm run-command invoke \
             --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
             --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
             --command-id RunShellScript \
-            --scripts "export NIX_CONFIG=\"access-tokens = github.com=\${GITHUB_TOKEN}\" && nixos-rebuild switch --flake \"github:${{ github.repository }}#gw1\" 2>&1" \
+            --scripts "export NIX_CONFIG=\"access-tokens = github.com=\${GITHUB_TOKEN}\" && nixos-rebuild switch --flake \"github:${{ github.repository }}#gw1\"" \
             --parameters "GITHUB_TOKEN=$GH_TOKEN" \
             --output json)
 
-          # Extract and print the command output so it is visible in the Actions log.
-          MESSAGE=$(echo "$OUTPUT" | jq -r '.value[0].message')
-          echo "$MESSAGE"
-
-          # Detect remote script failure: check stderr section of the response.
-          STDERR=$(echo "$OUTPUT" | jq -r '.value[] | select(.code == "ComponentStatus/StdErr/succeeded") | .message // empty')
+          # Print stdout and stderr sections for visibility in the Actions log.
+          STDOUT=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message // empty')
+          STDERR=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdErr")) | .message // empty')
+          echo "--- stdout ---"
+          echo "$STDOUT"
           if [ -n "$STDERR" ]; then
-            echo "::error::Remote script produced stderr output — deployment likely failed."
+            echo "--- stderr ---"
             echo "$STDERR"
+          fi
+
+          # Detect failure: any value entry whose code contains "/failed" indicates
+          # the remote script exited non-zero.
+          FAILED=$(echo "$OUTPUT" | jq -r '[.value[] | select(.code | test("/failed"))] | length')
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Remote script failed (Run Command reported a failed status)."
             exit 1
           fi
 
-          # Also fail if the message itself contains error indicators.
-          if echo "$MESSAGE" | grep -qiE "^error:|nixos-rebuild.*failed|activation script.*failed"; then
-            echo "::error::Remote nixos-rebuild reported errors."
+          # Also fail if stderr has content — the remote script should not produce
+          # stderr output on a clean run.
+          if [ -n "$STDERR" ]; then
+            echo "::error::Remote script produced stderr output — deployment likely failed."
             exit 1
           fi
