@@ -82,6 +82,7 @@ Five GitHub Actions workflows manage validation, deployment, and maintenance:
 | `comin-status` | `.github/workflows/comin-status.yml` | Daily, manual, or after `deploy-infra` | Health check — queries Comin service status on all VMs via `az vm run-command invoke`. Provides fleet visibility in the Actions tab. |
 | `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly schedule (Monday 08:00 UTC), or `workflow_dispatch` | Runs `nix flake update` and opens a PR with the refreshed `nixos/flake.lock`. Requires `GH_PAT` secret so the PR triggers `ci-pr.yml`. After merge, Comin picks up the updated lock automatically. |
 | `rotate-secrets-reminder` | `.github/workflows/rotate-secrets-reminder.yml` | Monthly (1st of month), or `workflow_dispatch` | Creates a GitHub issue with a checklist for reviewing and rotating secrets (GitHub PAT, Tailscale auth key, etc.). |
+| `destroy-infra` | `.github/workflows/destroy-infra.yml` | Manual only (`workflow_dispatch`) | **Deletes all Azure resource groups.** Requires typing `destroy` to confirm. Use for full environment reset. See [`docs/destroy-infra.md`](docs/destroy-infra.md). |
 
 **Key principle:** `ci-pr` acts as the gate — it runs on every PR and must pass before merging. After merge to `main`, Comin (running on each VM) polls this repo every 60 seconds and applies the new config automatically. The `deploy-infra` workflow only needs to bootstrap Comin on the first deploy — all subsequent changes are pulled by the VMs themselves.
 
