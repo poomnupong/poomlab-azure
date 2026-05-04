@@ -259,6 +259,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Use GH_PAT (Contents R/W) instead of the default GITHUB_TOKEN
+          # (Contents: read per workflow permissions) so the auto-setup
+          # agenix step can push the regenerated secrets.nix and .age
+          # files back to main. actions/checkout persists this token in
+          # http.https://github.com/.extraheader, which would otherwise
+          # override URL-embedded credentials and cause `git push` to
+          # fail with HTTP 403 "Write access to repository not granted".
+          token: ${{ secrets.GH_PAT }}
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
