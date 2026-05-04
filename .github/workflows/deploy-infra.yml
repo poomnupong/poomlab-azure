@@ -390,3 +390,78 @@ jobs:
             --name "deploy-${{ env.PROJECT_NAME }}" \
             --query properties.outputs \
             --output table
+
+      # ── Bootstrap Comin on fresh VMs ─────────────────────────────────
+      # After infra deployment, bootstrap Comin on any VM that was just
+      # created (or recreated from a new image). This one-time step:
+      #   1. Writes the GitHub PAT to /run/agenix/comin-github-token
+      #   2. Runs nixos-rebuild switch to install Comin itself
+      # After this, Comin takes over — all subsequent config changes are
+      # pulled automatically from this repo.
+      - name: Bootstrap Comin on gw1
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$GH_PAT"
+
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+
+          # Check if VM exists and is running
+          VM_VIEW_OUTPUT=""
+          VM_VIEW_EXIT=0
+          VM_VIEW_OUTPUT=$(az vm get-instance-view \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" \
+            --output tsv 2>&1) || VM_VIEW_EXIT=$?
+
+          if [ $VM_VIEW_EXIT -ne 0 ]; then
+            if echo "$VM_VIEW_OUTPUT" | grep -qi "could not be found\|ResourceNotFound\|ResourceGroupNotFound"; then
+              echo "::warning::VM does not exist yet. Skipping Comin bootstrap."
+              exit 0
+            else
+              echo "::error::Unexpected error querying VM: $VM_VIEW_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          POWER_STATE="$VM_VIEW_OUTPUT"
+          if [ "$POWER_STATE" != "PowerState/running" ]; then
+            echo "VM is not running (state: $POWER_STATE). Starting VM..."
+            az vm start --resource-group "$RG" --name "$VM_NAME"
+          fi
+
+          # Bootstrap: write PAT to token file, then nixos-rebuild to install Comin.
+          # After this, Comin is self-sustaining and pulls config changes automatically.
+          # az vm run-command invoke always exits 0 — must parse JSON for failures.
+          OUTPUT=$(az vm run-command invoke \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts $'set -euo pipefail\nsource /etc/profile\n\n# Write PAT for Comin (temporary bootstrap — agenix takes over after first rebuild)\nmkdir -p /run/agenix\necho "${GITHUB_PAT}" > /run/agenix/comin-github-token\nchmod 0400 /run/agenix/comin-github-token\n\n# First nixos-rebuild installs Comin + agenix. After this, Comin is self-sustaining.\nexport NIX_CONFIG="access-tokens = github.com=${GITHUB_PAT}"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "BOOTSTRAP_SUCCESS"' \
+            --parameters "GITHUB_PAT=$GH_PAT" \
+            --output json)
+
+          STDOUT=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message // empty')
+          STDERR=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdErr")) | .message // empty')
+          echo "--- stdout ---"
+          echo "$STDOUT"
+          if [ -n "$STDERR" ]; then
+            echo "--- stderr ---"
+            echo "$STDERR"
+          fi
+
+          FAILED=$(echo "$OUTPUT" | jq -r '[.value[] | select(.code | test("/failed"))] | length')
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Comin bootstrap failed (Run Command reported a failed status)."
+            exit 1
+          fi
+
+          if ! echo "$STDOUT" | grep -q "BOOTSTRAP_SUCCESS"; then
+            echo "::error::nixos-rebuild did not emit the success sentinel — bootstrap likely failed."
+            exit 1
+          fi
+
+          echo "✅ Comin bootstrap complete. Future config changes will be pulled automatically."

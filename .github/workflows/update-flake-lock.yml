@@ -81,24 +81,23 @@ jobs:
 
             This pull request was opened automatically by the `update-flake-lock`
             workflow. It contains a refreshed `nixos/flake.lock` that pins all
-            flake inputs (primarily `nixpkgs`) to their latest revisions.
+            flake inputs (primarily `nixpkgs`, `comin`, `agenix`) to their latest
+            revisions.
 
             ### What to do
 
-            1. Review the diff — confirm `nixpkgs` bumped to an expected revision.
+            1. Review the diff — confirm inputs bumped to expected revisions.
             2. Merge this PR.
 
             ### What happens after merge
 
-            Merging triggers `deploy-nixos.yml`, which uses `az vm run-command
-            invoke` to nudge every affected VM to run:
+            Comin (running on each VM) automatically detects the new commit on
+            `main` and runs `nixos-rebuild switch` with the updated flake lock.
+            No manual SSH or intervention is required.
 
-            ```
-            nixos-rebuild switch --flake github:<repo>#<hostname>
-            ```
-
-            Each VM will pull the updated config (including the new `nixpkgs`
-            pin) and rebuild itself. No manual SSH or intervention is required.
+            The `comin-status` workflow runs daily and can also be triggered
+            manually to verify VMs picked up the update. Commit statuses from
+            Comin's `postDeploymentCommand` will appear on this merge commit.
           branch: "automated/update-flake-lock"
           delete-branch: true
           labels: "dependencies,nixos"

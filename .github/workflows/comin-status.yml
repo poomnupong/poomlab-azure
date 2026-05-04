@@ -1,0 +1,151 @@
+# Comin Fleet Health Check
+#
+# Checks the deployment status of Comin-managed VMs. This workflow replaces
+# the old deploy-nixos.yml push-based deployment model.
+#
+# With Comin, VMs pull their own config changes automatically. This workflow
+# provides visibility into fleet health via the Actions tab:
+#   - Manual dispatch: check status on demand
+#   - Daily schedule: automated health monitoring
+#   - After deploy-infra: verify bootstrap succeeded
+#
+# Required secrets (same OIDC set as deploy-infra — no new secrets needed):
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+
+name: comin-status
+
+on:
+  workflow_run:
+    workflows: ["deploy-infra"]
+    types: [completed]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'   # Daily at 06:00 UTC
+
+permissions:
+  id-token: write   # Required for OIDC
+  contents: read
+
+env:
+  DEPLOYMENT_LOCATION: southcentralus
+  PROJECT_NAME: plaz
+
+jobs:
+  # ------------------------------------------------------------------
+  # Validate NixOS flake (same check as ci-pr for consistency)
+  # ------------------------------------------------------------------
+  validate:
+    name: Validate NixOS
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Check NixOS flake
+        run: |
+          cd nixos
+          if [ ! -f flake.lock ]; then
+            echo "error: nixos/flake.lock is missing. Commit the lock file and rerun CI."
+            exit 1
+          fi
+          nix flake check . --no-update-lock-file
+
+  # ------------------------------------------------------------------
+  # Check Comin status on each VM
+  # ------------------------------------------------------------------
+  check-gw1:
+    name: Check gw1 Comin Status
+    needs: validate
+    runs-on: ubuntu-latest
+    if: >-
+      needs.validate.result == 'success'
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check gw1 is running
+        id: ensure-vm
+        run: |
+          set -euo pipefail
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+
+          VM_VIEW_OUTPUT=""
+          VM_VIEW_EXIT=0
+          VM_VIEW_OUTPUT=$(az vm get-instance-view \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" \
+            --output tsv 2>&1) || VM_VIEW_EXIT=$?
+
+          if [ $VM_VIEW_EXIT -ne 0 ]; then
+            if echo "$VM_VIEW_OUTPUT" | grep -qi "could not be found\|ResourceNotFound\|ResourceGroupNotFound"; then
+              echo "::warning::VM or resource group does not exist yet. Run deploy-infra first."
+              echo "vm_ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
+              echo "::error::Unexpected error querying VM: $VM_VIEW_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          POWER_STATE="$VM_VIEW_OUTPUT"
+          echo "Current power state: $POWER_STATE"
+          if [ "$POWER_STATE" != "PowerState/running" ]; then
+            echo "::warning::VM is not running (state: $POWER_STATE). Skipping status check."
+            echo "vm_ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "vm_ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Query Comin status on gw1
+        if: steps['ensure-vm'].outputs.vm_ready != 'false'
+        run: |
+          set -euo pipefail
+
+          OUTPUT=$(az vm run-command invoke \
+            --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
+            --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
+            --command-id RunShellScript \
+            --scripts $'set -euo pipefail\nsource /etc/profile\necho "=== Comin service status ==="\nsystemctl is-active comin || echo "comin service is NOT active"\necho ""\necho "=== Comin journal (last 20 lines) ==="\njournalctl -u comin --no-pager -n 20 2>/dev/null || echo "No comin journal entries"\necho ""\necho "=== Current NixOS generation ==="\nreadlink /nix/var/nix/profiles/system || echo "unknown"\necho ""\necho "STATUS_CHECK_COMPLETE"' \
+            --output json)
+
+          STDOUT=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message // empty')
+          STDERR=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdErr")) | .message // empty')
+          echo "--- Comin Status Report ---"
+          echo "$STDOUT"
+          if [ -n "$STDERR" ]; then
+            echo "--- stderr ---"
+            echo "$STDERR"
+          fi
+
+          # Check for the Run Command failure code
+          FAILED=$(echo "$OUTPUT" | jq -r '[.value[] | select(.code | test("/failed"))] | length')
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Status check script failed on the VM."
+            exit 1
+          fi
+
+          if ! echo "$STDOUT" | grep -q "STATUS_CHECK_COMPLETE"; then
+            echo "::error::Status check did not complete successfully."
+            exit 1
+          fi
+
+          # Check if comin is active
+          if echo "$STDOUT" | grep -q "comin service is NOT active"; then
+            echo "::warning::Comin service is not active on gw1. Run deploy-infra to bootstrap."
+          else
+            echo "✅ Comin is active and healthy on gw1."
+          fi
