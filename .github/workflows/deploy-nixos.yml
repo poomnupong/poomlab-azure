@@ -191,7 +191,7 @@ jobs:
             --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
             --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
             --command-id RunShellScript \
-            --scripts $'set -euo pipefail\nexport NIX_CONFIG="access-tokens = github.com=${GITHUB_TOKEN}"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "NIXOS_REBUILD_SUCCESS"' \
+            --scripts $'set -euo pipefail\nsource /etc/profile\nexport NIX_CONFIG="access-tokens = github.com=${GITHUB_TOKEN}"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "NIXOS_REBUILD_SUCCESS"' \
             --parameters "GITHUB_TOKEN=$GH_TOKEN" \
             --output json)
 
