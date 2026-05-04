@@ -20,9 +20,13 @@
 #
 # I/O contract:
 #   * Writes the remote command's stdout to local stdout (fd 1).
-#   * Writes diagnostics + remote stderr to local stderr (fd 2).
+#   * Writes diagnostics to local stderr (fd 2): the extension status
+#     line (e.g. "Enable succeeded:" / "Enable failed: ...") and the
+#     remote stderr section. The remote stdout section is NEVER echoed
+#     to fd 2, so callers can safely capture sensitive output (host
+#     keys, tokens) via `> file` without leaking it into Actions logs.
 #   * Exits 0 iff Azure reports the run command provisioning succeeded
-#     AND the message does not begin with `Enable failed`.
+#     AND the status line does not begin with `Enable failed`.
 #   * Note: `az vm run-command invoke` does not surface the remote
 #     script's exit code, so callers must still validate the captured
 #     stdout (e.g. `grep` for an explicit success marker).
@@ -58,27 +62,41 @@ if [ -z "$MESSAGE" ]; then
   exit 1
 fi
 
-# Split MESSAGE at the embedded `[stdout]` / `[stderr]` markers.
-REMOTE_STDOUT=$(printf '%s\n' "$MESSAGE" | awk '
-  /^\[stdout\]$/ { section="out"; next }
-  /^\[stderr\]$/ { section="err"; next }
-  section == "out" { print }
-')
-REMOTE_STDERR=$(printf '%s\n' "$MESSAGE" | awk '
-  /^\[stdout\]$/ { section="out"; next }
-  /^\[stderr\]$/ { section="err"; next }
-  section == "err" { print }
-')
+# Split MESSAGE at the FIRST `[stdout]` and FIRST subsequent `[stderr]`
+# delimiter only. The remote command itself may legitimately print a
+# line like `[stdout]` or `[stderr]`, so toggling sections on every
+# match would mis-route or drop output.
+#
+# Layout produced by the run-command extension:
+#   <status prefix line(s), e.g. "Enable succeeded:" or "Enable failed: ...">
+#   [stdout]
+#   <remote stdout lines...>
+#   [stderr]
+#   <remote stderr lines...>
+TMPDIR_PARSE=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_PARSE"' EXIT
+printf '%s\n' "$MESSAGE" | awk -v out="$TMPDIR_PARSE" '
+  BEGIN { section="prefix" }
+  section == "prefix" && /^\[stdout\]$/ { section="out"; next }
+  section == "out"    && /^\[stderr\]$/ { section="err"; next }
+  { print > (out "/" section) }
+'
+STATUS_LINE=$(head -n 1 "$TMPDIR_PARSE/prefix" 2>/dev/null || true)
+REMOTE_STDERR=$(cat "$TMPDIR_PARSE/err" 2>/dev/null || true)
 
-# Always log diagnostics to fd 2 so callers can capture only the remote
-# stdout via command substitution. Including the raw message ensures the
-# next failure is self-explanatory, even if the markers ever change.
+# Log diagnostics to fd 2. Deliberately do NOT echo the raw message or
+# the remote stdout — the caller may be capturing stdout that contains
+# sensitive data (e.g. host keys, tokens). Surface only the extension
+# status line and remote stderr.
 {
   echo "--- az vm run-command invoke (vm=$VM_NAME, code=$CODE) ---"
+  echo "[status] $STATUS_LINE"
   echo "[remote stderr]"
-  echo "$REMOTE_STDERR"
-  echo "[raw message]"
-  echo "$MESSAGE"
+  if [ -n "$REMOTE_STDERR" ]; then
+    echo "$REMOTE_STDERR"
+  else
+    echo "(empty)"
+  fi
   echo "--- end ---"
 } >&2
 
@@ -87,10 +105,13 @@ REMOTE_STDERR=$(printf '%s\n' "$MESSAGE" | awk '
 # non-zero, but the message is prefixed `Enable failed:` when the
 # extension itself fails. Combine both signals.
 if printf '%s' "$CODE" | grep -qi 'failed' \
-   || printf '%s' "$MESSAGE" | head -n 1 | grep -q '^Enable failed'; then
+   || printf '%s' "$STATUS_LINE" | grep -q '^Enable failed'; then
   echo "::error::Remote command failed on $VM_NAME (code=$CODE)" >&2
   exit 1
 fi
 
-# Stream remote stdout to fd 1 for the caller.
-printf '%s\n' "$REMOTE_STDOUT"
+# Stream remote stdout to fd 1 for the caller. Use cat to preserve
+# trailing newlines / absence thereof exactly as the remote produced.
+if [ -f "$TMPDIR_PARSE/out" ]; then
+  cat "$TMPDIR_PARSE/out"
+fi

@@ -68,6 +68,9 @@ jobs:
     if: >-
       needs.validate.result == 'success'
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
