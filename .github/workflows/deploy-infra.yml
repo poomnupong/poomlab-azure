@@ -622,6 +622,50 @@ jobs:
           fi
           echo "Comin is not active (status: ${COMIN_STATUS:-unknown}). Proceeding with bootstrap..."
 
+          # ── Variables used by cleanup trap (initialised early so trap is safe) ─
+          NETWORK_RG="rg-${{ env.PROJECT_NAME }}-network-${{ env.DEPLOYMENT_LOCATION }}"
+          NSG_NAME="nsg-${{ env.PROJECT_NAME }}-gateway-${{ env.DEPLOYMENT_LOCATION }}"
+          NSG_RULE_NAME=""
+          VM_IP=""
+          EPHEMERAL_KEY_DIR=""
+          EPHEMERAL_KEY_COMMENT=""
+          PAT_FILE=""
+          KNOWN_HOSTS_FILE=""
+
+          # ── Cleanup trap: runs on EXIT (success or failure) ───────────────────
+          cleanup_ssh() {
+            echo "Cleaning up ephemeral resources..."
+            # Remove SSH key and temporary sudoers entry from the VM
+            if [ -d "${EPHEMERAL_KEY_DIR}" ] && [ -n "${VM_IP}" ] && [ -n "${EPHEMERAL_KEY_COMMENT}" ]; then
+              if [ -f "${KNOWN_HOSTS_FILE}" ]; then
+                ssh -i "${EPHEMERAL_KEY_DIR}/id" \
+                  -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" -o StrictHostKeyChecking=yes \
+                  -o BatchMode=yes -o ConnectTimeout=10 -o IdentitiesOnly=yes \
+                  "azureuser@${VM_IP}" \
+                  "sed -i '/${EPHEMERAL_KEY_COMMENT}/d' ~/.ssh/authorized_keys && sudo rm -f /etc/sudoers.d/bootstrap-temp" \
+                  2>/dev/null || true
+              else
+                ssh -i "${EPHEMERAL_KEY_DIR}/id" \
+                  -o StrictHostKeyChecking=no \
+                  -o BatchMode=yes -o ConnectTimeout=10 -o IdentitiesOnly=yes \
+                  "azureuser@${VM_IP}" \
+                  "sed -i '/${EPHEMERAL_KEY_COMMENT}/d' ~/.ssh/authorized_keys && sudo rm -f /etc/sudoers.d/bootstrap-temp" \
+                  2>/dev/null || true
+              fi
+            fi
+            # Remove temporary NSG rule that allowed runner SSH access
+            if [ -n "${NSG_RULE_NAME}" ]; then
+              az network nsg rule delete \
+                --resource-group "${NETWORK_RG}" \
+                --nsg-name "${NSG_NAME}" \
+                --name "${NSG_RULE_NAME}" 2>/dev/null || true
+            fi
+            [ -n "${EPHEMERAL_KEY_DIR}" ] && rm -rf "${EPHEMERAL_KEY_DIR}" 2>/dev/null || true
+            [ -n "${PAT_FILE}" ]          && rm -f  "${PAT_FILE}"          2>/dev/null || true
+            [ -n "${KNOWN_HOSTS_FILE}" ]  && rm -f  "${KNOWN_HOSTS_FILE}"  2>/dev/null || true
+          }
+          trap cleanup_ssh EXIT
+
           # ── Get VM public IP for SSH ─────────────────────────────────────────
           VM_IP=$(az vm show -d --resource-group "$RG" --name "$VM_NAME" --query publicIps -o tsv)
           if [ -z "$VM_IP" ]; then
@@ -639,38 +683,61 @@ jobs:
           # ── PAT temp file — never passes PAT via command-line args ────────────
           PAT_FILE=$(mktemp)
           printf '%s' "$GH_PAT" > "$PAT_FILE"
+          KNOWN_HOSTS_FILE=$(mktemp)
+          chmod 600 "$KNOWN_HOSTS_FILE"
 
-          # ── Cleanup trap: remove ephemeral key from VM on EXIT ───────────────
-          cleanup_ssh() {
-            echo "Cleaning up ephemeral SSH key..."
-            ssh -i "$EPHEMERAL_KEY_DIR/id" \
-              -o StrictHostKeyChecking=no -o BatchMode=yes \
-              -o ConnectTimeout=10 -o IdentitiesOnly=yes \
-              "azureuser@${VM_IP}" \
-              "sed -i '/${EPHEMERAL_KEY_COMMENT}/d' ~/.ssh/authorized_keys" 2>/dev/null || true
-            rm -rf "$EPHEMERAL_KEY_DIR"
-            rm -f "$PAT_FILE"
-          }
-          trap cleanup_ssh EXIT
-
-          # ── Inject ephemeral public key via single blocking run-command (~1 min) ─
-          echo "Injecting ephemeral SSH public key into $VM_NAME..."
-          az vm run-command invoke \
-            --resource-group "$RG" \
-            --name "$VM_NAME" \
-            --command-id RunShellScript \
-            --scripts "mkdir -p /home/azureuser/.ssh
-          echo '$EPHEMERAL_PUBKEY' >> /home/azureuser/.ssh/authorized_keys
-          chmod 600 /home/azureuser/.ssh/authorized_keys
-          chown -R azureuser:users /home/azureuser/.ssh
-          echo key-injected" \
+          # ── Temporarily allow SSH from this runner (NSG only permits known IPs) ─
+          RUNNER_IP=$(curl -sf --retry 3 https://api.ipify.org || curl -sf --retry 3 https://icanhazip.com)
+          if [ -z "$RUNNER_IP" ]; then
+            echo "::error::Could not determine runner public IP for NSG rule"
+            exit 1
+          fi
+          NSG_RULE_NAME="AllowBootstrapSSH-$$-$(date +%s)"
+          echo "Adding temporary NSG rule ${NSG_RULE_NAME} for runner IP ${RUNNER_IP} ..."
+          az network nsg rule create \
+            --resource-group "$NETWORK_RG" \
+            --nsg-name "$NSG_NAME" \
+            --name "$NSG_RULE_NAME" \
+            --priority 999 \
+            --direction Inbound \
+            --access Allow \
+            --protocol Tcp \
+            --source-address-prefix "${RUNNER_IP}/32" \
+            --destination-port-range 22 \
             --output none
+
+          # ── Inject SSH key, grant bootstrap sudoers, capture VM host key ─────
+          # Runs as root via Azure Run Command — single blocking call (~1 min).
+          # Outputs the VM's ed25519 host key on stdout for strict host-key pinning.
+          echo "Injecting ephemeral SSH key and bootstrap sudoers into $VM_NAME..."
+          INJECT_SCRIPT=$(printf '%s\n' \
+            "mkdir -p /home/azureuser/.ssh" \
+            "echo '${EPHEMERAL_PUBKEY}' >> /home/azureuser/.ssh/authorized_keys" \
+            "chmod 600 /home/azureuser/.ssh/authorized_keys" \
+            "chown -R azureuser:users /home/azureuser/.ssh" \
+            "echo 'azureuser ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/bootstrap-temp" \
+            "chmod 440 /etc/sudoers.d/bootstrap-temp" \
+            "cat /etc/ssh/ssh_host_ed25519_key.pub")
+          INJECT_OUT=$(mktemp)
+          .github/scripts/az-run-command.sh "$RG" "$VM_NAME" "$INJECT_SCRIPT" > "$INJECT_OUT"
+
+          # Extract VM host key and build a known_hosts file for strict verification
+          HOST_KEY_DATA=$(grep '^ssh-ed25519 ' "$INJECT_OUT" | head -1 | awk '{print $1, $2}')
+          rm -f "$INJECT_OUT"
+          if [ -z "$HOST_KEY_DATA" ]; then
+            echo "::error::Could not retrieve SSH host key from $VM_NAME"
+            exit 1
+          fi
+          echo "${VM_IP} ${HOST_KEY_DATA}" > "$KNOWN_HOSTS_FILE"
+          echo "Pinned VM SSH host key for ${VM_IP}"
 
           # ── Write bootstrap script to a temp file ────────────────────────────
           BOOTSTRAP_SCRIPT=$(mktemp)
           cat > "$BOOTSTRAP_SCRIPT" <<SCRIPT
           set -eo pipefail
-          source /etc/profile
+          # NixOS /etc/profile references __ETC_PROFILE_SOURCED which is unbound
+          # on first invocation; temporarily disable nounset to avoid failure.
+          set +u; source /etc/profile; set -u
           mkdir -p /run/agenix
           cat /tmp/comin_pat_bootstrap > /run/agenix/comin-github-token
           chmod 600 /run/agenix/comin-github-token
@@ -681,17 +748,22 @@ jobs:
           echo "nixos-rebuild completed successfully"
           SCRIPT
 
-          # ── Copy PAT to VM temp location via scp (cleaned up by bootstrap script) ─
+          # ── Copy PAT to VM (cleaned up by bootstrap script) ──────────────────
           scp -i "$EPHEMERAL_KEY_DIR/id" \
-            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
+            -o StrictHostKeyChecking=yes \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             "$PAT_FILE" "azureuser@${VM_IP}:/tmp/comin_pat_bootstrap"
 
-          # ── Stream nixos-rebuild output via SSH ──────────────────────────────
+          # ── Stream nixos-rebuild output via SSH (90-min timeout) ─────────────
+          # BOOTSTRAP_TIMEOUT_SECONDS = 90 min: nixos-rebuild of a full NixOS
+          # system takes 30-60+ min; 90 min matches the old polling loop deadline.
+          BOOTSTRAP_TIMEOUT_SECONDS=5400
           echo "Starting nixos-rebuild bootstrap via SSH (output streams in real time)..."
-          ssh -i "$EPHEMERAL_KEY_DIR/id" \
-            -o StrictHostKeyChecking=accept-new \
+          timeout "$BOOTSTRAP_TIMEOUT_SECONDS" ssh -i "$EPHEMERAL_KEY_DIR/id" \
+            -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
+            -o StrictHostKeyChecking=yes \
             -o BatchMode=yes \
             -o ConnectTimeout=30 \
             -o ServerAliveInterval=30 \
