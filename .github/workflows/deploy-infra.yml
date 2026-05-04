@@ -437,16 +437,37 @@ jobs:
           export PATH="$HOME/go/bin:$PATH"
 
           # ── Extract VM SSH host key → age public key ──────────────────
-          OUTPUT=$(az vm run-command invoke \
-            --resource-group "$RG" \
-            --name "$VM_NAME" \
-            --command-id RunShellScript \
-            --scripts 'cat /etc/ssh/ssh_host_ed25519_key.pub' \
-            --output json)
-          VM_SSH_PUBKEY=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message' | head -1 | xargs)
+          # Retry up to 6 times (total ~5 min) because on freshly created VMs
+          # the Azure VM agent (waagent) needs time to initialize before
+          # run-command invoke returns useful output.
+          VM_SSH_PUBKEY=""
+          for attempt in 1 2 3 4 5 6; do
+            echo "Attempt $attempt: extracting VM SSH host key..."
+            RC=0
+            OUTPUT=$(az vm run-command invoke \
+              --resource-group "$RG" \
+              --name "$VM_NAME" \
+              --command-id RunShellScript \
+              --scripts 'cat /etc/ssh/ssh_host_ed25519_key.pub' \
+              --output json) || RC=$?
+            if [ "$RC" -ne 0 ]; then
+              echo "::warning::az vm run-command invoke exited with code $RC"
+            fi
+            echo "run-command stdout: $(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message' 2>/dev/null)"
+            echo "run-command stderr: $(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdErr")) | .message' 2>/dev/null)"
+            VM_SSH_PUBKEY=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message' | head -1 | xargs)
+            if [ -n "$VM_SSH_PUBKEY" ] && echo "$VM_SSH_PUBKEY" | grep -q "ssh-ed25519"; then
+              echo "Successfully extracted SSH host key on attempt $attempt."
+              break
+            fi
+            if [ "$attempt" -lt 6 ]; then
+              echo "::warning::SSH host key not available yet. Waiting 60s before retry..."
+              sleep 60
+            fi
+          done
 
           if [ -z "$VM_SSH_PUBKEY" ] || ! echo "$VM_SSH_PUBKEY" | grep -q "ssh-ed25519"; then
-            echo "::error::Failed to extract VM SSH ed25519 public key"
+            echo "::error::Failed to extract VM SSH ed25519 public key after 6 attempts"
             exit 1
           fi
 
