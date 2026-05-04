@@ -9,7 +9,7 @@
 
 let
   # ── VM host keys ────────────────────────────────────────────────
-  gw1 = "age1802l3yqtg3een7ewpt9sse8nhnp2d2lxjf4uc5974n0j4lzv69asntxfla";
+  gw1 = "age1fcvee7uadn9pyd0y8n0tdtle05gkjxx3za8lvw6t5j74anhxgsrsd435y2";
 
   allSystems = [ gw1 ];
 in
