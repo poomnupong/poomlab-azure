@@ -618,9 +618,10 @@ jobs:
             --no-wait
 
           # ── Poll for completion ──────────────────────────────────────────
-          echo "Polling run command status (timeout: 90 min) ..."
-          MAX_POLLS=180       # 180 × 30s = 90 min
+          TIMEOUT_MINUTES=90
           POLL_INTERVAL=30    # seconds
+          MAX_POLLS=$(( TIMEOUT_MINUTES * 60 / POLL_INTERVAL ))
+          echo "Polling run command status (timeout: ${TIMEOUT_MINUTES} min, interval: ${POLL_INTERVAL}s, max polls: ${MAX_POLLS}) ..."
           for i in $(seq 1 $MAX_POLLS); do
             sleep $POLL_INTERVAL
 
@@ -681,7 +682,7 @@ jobs:
             esac
           done
 
-          echo "::error::Bootstrap timed out after $((MAX_POLLS * POLL_INTERVAL / 60)) minutes"
+          echo "::error::Bootstrap timed out after ${TIMEOUT_MINUTES} minutes"
           az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
             --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
           exit 1
