@@ -435,7 +435,7 @@ jobs:
           COMIN_AGE="nixos/secrets/comin-github-token.age"
           TAILSCALE_AGE="nixos/secrets/tailscale-authkey.age"
 
-          if grep -qP '^  gw1 = "age1[a-z0-9]+";' "$SECRETS_NIX" 2>/dev/null \
+          if grep -qE '^  gw1 = "age1[a-z0-9]+";' "$SECRETS_NIX" 2>/dev/null \
              && head -1 "$COMIN_AGE" 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
              && ! grep -qi "placeholder\|replace" "$COMIN_AGE" 2>/dev/null \
              && head -1 "$TAILSCALE_AGE" 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
