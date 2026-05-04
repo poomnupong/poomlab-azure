@@ -23,7 +23,7 @@
   outputs = { self, nixpkgs, nixpkgs-stable, ... }:
     let
       system = "x86_64-linux";
-      pkgs-stable = import nixpkgs-stable { inherit system; };
+      pkgs-unstable = import nixpkgs { inherit system; };
     in
     {
 
@@ -31,12 +31,16 @@
     # Each entry is consumed by `nixos-rebuild switch --flake .#<name>`.
     # GitHub Actions passes an ephemeral GITHUB_TOKEN to the VM so it can
     # pull from this private repo without any stored credentials.
+    #
+    # Channel policy:
+    #   - pkgs (default) = nixpkgs-stable (nixos-25.11) — used unless specified
+    #   - pkgs-unstable  = nixpkgs (nixos-unstable) — opt-in for bleeding-edge
     nixosConfigurations = {
 
       # ── gw1: NixOS gateway / NVA VM ──────────────────────────────
-      gw1 = nixpkgs.lib.nixosSystem {
+      gw1 = nixpkgs-stable.lib.nixosSystem {
         inherit system;
-        specialArgs = { inherit pkgs-stable; };
+        specialArgs = { inherit pkgs-unstable; };
         modules = [
           ./hosts/gw1/default.nix
           ./hosts/gw1/hardware.nix
@@ -44,9 +48,9 @@
       };
 
       # Future VMs: add entries here, e.g.:
-      # vm2 = nixpkgs.lib.nixosSystem {
+      # vm2 = nixpkgs-stable.lib.nixosSystem {
       #   inherit system;
-      #   specialArgs = { inherit pkgs-stable; };
+      #   specialArgs = { inherit pkgs-unstable; };
       #   modules = [
       #     ./hosts/vm2/default.nix
       #     ./hosts/vm2/hardware.nix

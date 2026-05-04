@@ -181,8 +181,8 @@ jobs:
           # Mask the token so it does not appear in the Actions log.
           echo "::add-mask::$GH_TOKEN"
 
-          # az vm run-command invoke exits non-zero if the script fails, so
-          # the command's own exit code is the reliable signal.
+          # az vm run-command invoke always exits 0 regardless of remote script
+          # outcome. We must parse the JSON response to detect failures.
           OUTPUT=$(az vm run-command invoke \
             --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
             --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
@@ -192,4 +192,19 @@ jobs:
             --output json)
 
           # Extract and print the command output so it is visible in the Actions log.
-          echo "$OUTPUT" | jq -r '.value[0].message'
+          MESSAGE=$(echo "$OUTPUT" | jq -r '.value[0].message')
+          echo "$MESSAGE"
+
+          # Detect remote script failure: check stderr section of the response.
+          STDERR=$(echo "$OUTPUT" | jq -r '.value[] | select(.code == "ComponentStatus/StdErr/succeeded") | .message // empty')
+          if [ -n "$STDERR" ]; then
+            echo "::error::Remote script produced stderr output — deployment likely failed."
+            echo "$STDERR"
+            exit 1
+          fi
+
+          # Also fail if the message itself contains error indicators.
+          if echo "$MESSAGE" | grep -qiE "^error:|nixos-rebuild.*failed|activation script.*failed"; then
+            echo "::error::Remote nixos-rebuild reported errors."
+            exit 1
+          fi

@@ -3,14 +3,13 @@
 # Enables the Tailscale daemon and configures automatic authentication.
 # Set the auth key via a NixOS secret or an environment-specific override.
 
-{ config, pkgs, ... }:
+{ config, pkgs, pkgs-unstable, ... }:
 
 {
   # ── Tailscale service ────────────────────────────────────────────────
   services.tailscale = {
     enable = true;
-    # TODO: set openFirewall = true if you want NixOS to manage the firewall
-    # rule for Tailscale UDP port 41641 automatically.
+    package = pkgs-unstable.tailscale;
     openFirewall = true;
   };
 
@@ -26,7 +25,7 @@
     serviceConfig.Type = "oneshot";
     script = ''
       # Skip if already authenticated
-      status="$(${pkgs.tailscale}/bin/tailscale status --json | ${pkgs.jq}/bin/jq -r .BackendState)"
+      status="$(${pkgs-unstable.tailscale}/bin/tailscale status --json | ${pkgs.jq}/bin/jq -r .BackendState)"
       if [ "$status" = "Running" ]; then
         echo "Tailscale already running, skipping auth."
         exit 0
@@ -39,7 +38,7 @@
         exit 0
       fi
 
-      ${pkgs.tailscale}/bin/tailscale up \
+      ${pkgs-unstable.tailscale}/bin/tailscale up \
         --authkey "$(cat "$AUTH_KEY_FILE")" \
         --accept-routes \
         --advertise-exit-node=false
