@@ -171,6 +171,7 @@ jobs:
             --query id -o tsv)
 
           echo "🔑 Getting write SAS …"
+          set +x  # ── hide SAS token from trace ──
           SAS=$(az disk grant-access \
             --resource-group "$GALLERY_RG" \
             --name "$DISK_NAME" \
@@ -180,6 +181,7 @@ jobs:
 
           echo "⬆️  Uploading VHD …"
           azcopy copy "$VHD_FILE" "$SAS" --blob-type PageBlob
+          set -x  # ── re-enable trace ──
 
           echo "🔒 Revoking disk access …"
           az disk revoke-access \
@@ -575,7 +577,7 @@ jobs:
 
           RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
           VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
-          RUN_CMD_NAME="bootstrap-comin-$(date +%s)"
+          RUN_CMD_NAME="bootstrap-comin"
 
           # Check if VM exists and is running (may already be running from agenix step)
           VM_VIEW_OUTPUT=""
@@ -606,6 +608,14 @@ jobs:
           # Using `az vm run-command create --no-wait` + polling instead of
           # blocking `az vm run-command invoke` to avoid OIDC token expiration
           # on long-running rebuilds (30-60+ min).
+          # Delete any stale run command from a previous (possibly cancelled) run.
+          # This also prevents concurrent bootstraps: `cancel-in-progress: true`
+          # cancels the workflow, but the server-side run command keeps going.
+          # Deleting it here ensures only one bootstrap runs at a time.
+          echo "Cleaning up any stale run command: $RUN_CMD_NAME"
+          az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
+            --name "$RUN_CMD_NAME" --yes 2>/dev/null || true
+
           echo "Creating async run command: $RUN_CMD_NAME"
           az vm run-command create \
             --resource-group "$RG" \
@@ -613,7 +623,7 @@ jobs:
             --name "$RUN_CMD_NAME" \
             --script $'set -eo pipefail\nset +u; source /etc/profile; set -u\necho "--- bootstrap started at $(date -Iseconds) ---"\n\n# Write PAT for Comin (temporary bootstrap — agenix takes over after first rebuild)\nmkdir -p /run/agenix\nprintf "%s" "$GITHUB_PAT" > /run/agenix/comin-github-token\nchmod 0400 /run/agenix/comin-github-token\n\n# First nixos-rebuild installs Comin + agenix. After this, Comin is self-sustaining.\nexport NIX_CONFIG="access-tokens = github.com=$GITHUB_PAT"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "--- bootstrap finished at $(date -Iseconds) ---"\necho "BOOTSTRAP_SUCCESS"' \
             --parameters '[{"name":"GITHUB_PAT","value":"'"$GH_PAT"'"}]' \
-            --timeout-in-seconds 3600 \
+            --timeout-in-seconds 5400 \
             --async-execution true \
             --no-wait
 
@@ -621,6 +631,8 @@ jobs:
           TIMEOUT_MINUTES=90
           POLL_INTERVAL=30    # seconds
           MAX_POLLS=$(( TIMEOUT_MINUTES * 60 / POLL_INTERVAL ))
+          MAX_CONSECUTIVE_FAILURES=5
+          CONSECUTIVE_FAILURES=0
           echo "Polling run command status (timeout: ${TIMEOUT_MINUTES} min, interval: ${POLL_INTERVAL}s, max polls: ${MAX_POLLS}) ..."
           for i in $(seq 1 $MAX_POLLS); do
             sleep $POLL_INTERVAL
@@ -632,9 +644,17 @@ jobs:
               --instance-view \
               --query "instanceView" \
               --output json 2>&1) || {
-              echo "::warning::Poll $i: az vm run-command show failed (token refresh needed?), retrying..."
+              CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+              echo "::warning::Poll $i: az vm run-command show failed ($CONSECUTIVE_FAILURES/${MAX_CONSECUTIVE_FAILURES} consecutive). Output: $INSTANCE_VIEW"
+              if [ "$CONSECUTIVE_FAILURES" -ge "$MAX_CONSECUTIVE_FAILURES" ]; then
+                echo "::error::Aborting after $MAX_CONSECUTIVE_FAILURES consecutive poll failures."
+                az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
+                  --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
+                exit 1
+              fi
               continue
             }
+            CONSECUTIVE_FAILURES=0
 
             EXEC_STATE=$(printf '%s' "$INSTANCE_VIEW" | jq -r '.executionState // "Unknown"')
             echo "  poll $i/${MAX_POLLS}: executionState=$EXEC_STATE"
