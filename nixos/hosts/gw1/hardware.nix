@@ -11,8 +11,16 @@
   ];
 
   # ── Boot loader ─────────────────────────────────────────────────────
-  boot.loader.systemd-boot.enable = true;
-  boot.loader.efi.canTouchEfiVariables = true;
+  # Match the base image (nixos-azimage-builder → nixpkgs azure-image.nix
+  # with vmGeneration = "v2"), which installs GRUB-EFI as a removable
+  # bootloader on the ESP. Switching to systemd-boot here would require
+  # a one-time `--install-bootloader` rebuild and break first-boot deploys.
+  boot.loader.grub = {
+    enable = true;
+    efiSupport = true;
+    device = "nodev";
+    efiInstallAsRemovable = true;
+  };
 
   # ── Kernel modules ──────────────────────────────────────────────────
   # Azure Hyper-V + NVMe disk controller support
@@ -37,7 +45,9 @@
   };
 
   fileSystems."/boot" = {
-    device = "/dev/disk/by-label/boot";
+    # The ESP is labelled "ESP" by nixpkgs azure-image.nix (vmGeneration = "v2"),
+    # not "boot".
+    device = "/dev/disk/by-label/ESP";
     fsType = "vfat";
     options = [ "fmask=0077" "dmask=0077" ];
   };
