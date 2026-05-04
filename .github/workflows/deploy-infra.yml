@@ -371,6 +371,10 @@ jobs:
             --force-deletion yes \
             --yes
 
+          # Signal to downstream steps (agenix, bootstrap) that the VM was
+          # recreated and has a new SSH host key — secrets must be re-provisioned.
+          echo "VM_RECREATED=true" >> "$GITHUB_ENV"
+
           # Delete the old OS disk synchronously so Bicep can recreate it
           OS_DISK="osdisk-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
           echo "Deleting old OS disk $OS_DISK..."
@@ -423,6 +427,29 @@ jobs:
           RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
           VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
 
+          # ── Fast pre-check: skip if secrets already look good ────────
+          # Check .age files BEFORE any expensive operations (installing
+          # tools, querying the VM, extracting SSH keys). This avoids
+          # ~60s+ of unnecessary work on every re-run against an already-
+          # provisioned VM. We verify:
+          #   1. The VM was NOT recreated earlier in this run (new host key
+          #      means secrets.nix has the wrong recipient)
+          #   2. secrets.nix exists and contains an age1… public key
+          #   3. Both .age files have valid age ciphertext headers
+          SECRETS_NIX="nixos/secrets/secrets.nix"
+          COMIN_AGE="nixos/secrets/comin-github-token.age"
+          TAILSCALE_AGE="nixos/secrets/tailscale-authkey.age"
+
+          if [ "${VM_RECREATED:-}" = "true" ]; then
+            echo "VM was recreated (new host key) — must re-provision secrets."
+          elif grep -qE '^  gw1 = "age1[a-z0-9]+";' "$SECRETS_NIX" 2>/dev/null \
+             && head -1 "$COMIN_AGE" 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
+             && head -1 "$TAILSCALE_AGE" 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----"; then
+            echo "Age keys and encrypted secrets are already provisioned. Skipping."
+            exit 0
+          fi
+          echo "Secrets need provisioning — continuing with full setup."
+
           # Check if VM exists and is running
           VM_VIEW_OUTPUT=""
           VM_VIEW_EXIT=0
@@ -467,8 +494,10 @@ jobs:
           # Capture remote stdout via the shared helper (see
           # .github/scripts/az-run-command.sh for why direct jq parsing
           # of `az vm run-command invoke` output is fragile).
+          # Wrap in `timeout` to avoid indefinite hangs from
+          # `az vm run-command invoke` (observed in run #46).
           SSH_KEY_FILE=$(mktemp)
-          .github/scripts/az-run-command.sh "$RG" "$VM_NAME" \
+          timeout 300 .github/scripts/az-run-command.sh "$RG" "$VM_NAME" \
             'source /etc/profile && cat /etc/ssh/ssh_host_ed25519_key.pub' \
             > "$SSH_KEY_FILE"
           VM_SSH_PUBKEY=$(head -n 1 "$SSH_KEY_FILE" | xargs)
@@ -481,28 +510,6 @@ jobs:
 
           VM_AGE_PUBKEY=$(echo "$VM_SSH_PUBKEY" | ssh-to-age)
           echo "VM age public key: $VM_AGE_PUBKEY"
-
-          # ── Decide whether to re-encrypt ──────────────────────────────
-          # Always re-encrypt if: secrets.nix is missing the key, or any
-          # .age file looks like a placeholder (not real age ciphertext).
-          NEEDS_UPDATE=false
-          if ! grep -qF "$VM_AGE_PUBKEY" nixos/secrets/secrets.nix 2>/dev/null; then
-            echo "secrets.nix does not contain VM age key — will update."
-            NEEDS_UPDATE=true
-          elif ! head -1 nixos/secrets/comin-github-token.age 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
-               || grep -qi "placeholder\|replace" nixos/secrets/comin-github-token.age 2>/dev/null; then
-            echo "comin-github-token.age is missing or looks like a placeholder — will re-encrypt."
-            NEEDS_UPDATE=true
-          elif ! head -1 nixos/secrets/tailscale-authkey.age 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
-               || grep -qi "placeholder\|replace" nixos/secrets/tailscale-authkey.age 2>/dev/null; then
-            echo "tailscale-authkey.age is missing or looks like a placeholder — will re-encrypt."
-            NEEDS_UPDATE=true
-          fi
-
-          if [ "$NEEDS_UPDATE" = "false" ]; then
-            echo "Age keys and encrypted secrets are already up to date. Skipping."
-            exit 0
-          fi
 
           # ── Update secrets.nix with real VM host key ──────────────────
           {
@@ -603,6 +610,30 @@ jobs:
             echo "VM is not running (state: $POWER_STATE). Starting VM..."
             az vm start --resource-group "$RG" --name "$VM_NAME"
           fi
+
+          # ── Skip if Comin is already running (idempotency) ───────────
+          # On an already-bootstrapped VM, Comin is self-sustaining and
+          # re-running nixos-rebuild (30-60+ min) is unnecessary. Check
+          # the service status before launching the expensive rebuild.
+          echo "Checking if Comin is already active on $VM_NAME..."
+          az vm wait \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --custom "instanceView.vmAgent.statuses[?code=='ProvisioningState/succeeded']" \
+            --timeout 300
+
+          COMIN_CHECK=$(mktemp)
+          timeout 300 .github/scripts/az-run-command.sh "$RG" "$VM_NAME" \
+            'set +u; source /etc/profile; set -u; systemctl is-active comin 2>/dev/null || echo inactive' \
+            > "$COMIN_CHECK" 2>/dev/null || true
+          COMIN_STATUS=$(head -n 1 "$COMIN_CHECK" | xargs)
+          rm -f "$COMIN_CHECK"
+
+          if [ "$COMIN_STATUS" = "active" ]; then
+            echo "✅ Comin is already active on $VM_NAME. Skipping bootstrap."
+            exit 0
+          fi
+          echo "Comin is not active (status: ${COMIN_STATUS:-unknown}). Proceeding with bootstrap..."
 
           # ── Launch nixos-rebuild asynchronously via managed run command ──
           # Using `az vm run-command create --no-wait` + polling instead of
