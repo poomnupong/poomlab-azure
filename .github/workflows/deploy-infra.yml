@@ -528,8 +528,13 @@ jobs:
             ALL_KEYS_LINE="  allKeys = allSystems;"
           fi
 
-          cat > nixos/secrets/secrets.nix << SECRETS_EOF
-          # secrets.nix — Agenix recipients list
+          # Generate secrets.nix using python to avoid heredoc whitespace issues
+          python3 -c "
+          import sys
+          admin_line = sys.argv[1]
+          all_keys_line = sys.argv[2]
+          vm_key = sys.argv[3]
+          print('''# secrets.nix — Agenix recipients list
           #
           # AUTO-POPULATED by deploy-infra.yml — do not edit the key values manually.
           # To rotate secrets, see docs/comin-deployment.md.
@@ -539,35 +544,32 @@ jobs:
 
           let
             # ── Admin keys ──────────────────────────────────────────────────
-          $ADMIN_LINE
+          ''' + admin_line + '''
 
             # ── VM host keys ────────────────────────────────────────────────
-            gw1 = "$VM_AGE_PUBKEY";
+            gw1 = \"''' + vm_key + '''\";
 
             allSystems = [ gw1 ];
-          $ALL_KEYS_LINE
+          ''' + all_keys_line + '''
           in
           {
-            "comin-github-token.age".publicKeys = allKeys;
-            "tailscale-authkey.age".publicKeys = allKeys;
-          }
-          SECRETS_EOF
-
-          # Remove leading whitespace from heredoc (caused by YAML indentation)
-          sed -i 's/^          //' nixos/secrets/secrets.nix
+            \"comin-github-token.age\".publicKeys = allKeys;
+            \"tailscale-authkey.age\".publicKeys = allKeys;
+          }'''.lstrip())
+          " "$ADMIN_LINE" "$ALL_KEYS_LINE" "$VM_AGE_PUBKEY" > nixos/secrets/secrets.nix
 
           # ── Encrypt secrets with age ──────────────────────────────────
-          AGE_ARGS="-r $VM_AGE_PUBKEY"
+          AGE_RECIPIENTS=(-r "$VM_AGE_PUBKEY")
           if [ -n "$ADMIN_AGE_PUBKEY" ]; then
-            AGE_ARGS="$AGE_ARGS -r $ADMIN_AGE_PUBKEY"
+            AGE_RECIPIENTS+=(-r "$ADMIN_AGE_PUBKEY")
           fi
 
           # Encrypt GH_PAT → comin-github-token.age
-          printf '%s' "$GH_PAT" | age $AGE_ARGS -a > nixos/secrets/comin-github-token.age
+          printf '%s' "$GH_PAT" | age "${AGE_RECIPIENTS[@]}" -a > nixos/secrets/comin-github-token.age
 
           # Encrypt empty placeholder → tailscale-authkey.age
           # (will be replaced with a real key via agenix -e when available)
-          printf 'PLACEHOLDER_REPLACE_WITH_REAL_KEY' | age $AGE_ARGS -a > nixos/secrets/tailscale-authkey.age
+          printf 'PLACEHOLDER_REPLACE_WITH_REAL_KEY' | age "${AGE_RECIPIENTS[@]}" -a > nixos/secrets/tailscale-authkey.age
 
           # ── Commit and push ───────────────────────────────────────────
           git config user.name "github-actions[bot]"
