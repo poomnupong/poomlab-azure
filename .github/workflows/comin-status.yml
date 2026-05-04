@@ -122,7 +122,7 @@ jobs:
           .github/scripts/az-run-command.sh \
             "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
             "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
-            $'set -euo pipefail\nsource /etc/profile\necho "=== Comin service status ==="\nsystemctl is-active comin || echo "comin service is NOT active"\necho ""\necho "=== Comin journal (last 20 lines) ==="\njournalctl -u comin --no-pager -n 20 2>/dev/null || echo "No comin journal entries"\necho ""\necho "=== Current NixOS generation ==="\nreadlink /nix/var/nix/profiles/system || echo "unknown"\necho ""\necho "STATUS_CHECK_COMPLETE"' \
+            $'set -eo pipefail\nset +u; source /etc/profile; set -u\necho "=== Comin service status ==="\nsystemctl is-active comin || echo "comin service is NOT active"\necho ""\necho "=== Comin journal (last 20 lines) ==="\njournalctl -u comin --no-pager -n 20 2>/dev/null || echo "No comin journal entries"\necho ""\necho "=== Current NixOS generation ==="\nreadlink /nix/var/nix/profiles/system || echo "unknown"\necho ""\necho "STATUS_CHECK_COMPLETE"' \
             > "$OUTPUT_FILE"
 
           STDOUT=$(cat "$OUTPUT_FILE")
