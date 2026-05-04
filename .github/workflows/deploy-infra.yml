@@ -451,7 +451,7 @@ jobs:
             --resource-group "$RG" \
             --name "$VM_NAME" \
             --command-id RunShellScript \
-            --scripts 'cat /etc/ssh/ssh_host_ed25519_key.pub' \
+            --scripts 'source /etc/profile && cat /etc/ssh/ssh_host_ed25519_key.pub' \
             --output json)
           echo "run-command stdout: $(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message' 2>/dev/null)"
           echo "run-command stderr: $(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdErr")) | .message' 2>/dev/null)"
