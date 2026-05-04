@@ -558,23 +558,11 @@ jobs:
       # ── Bootstrap Comin on fresh VMs ─────────────────────────────────
       # Runs AFTER agenix secrets are committed so that nixos-rebuild
       # finds valid age-encrypted .age files. This one-time step:
-      #   1. Writes the GitHub PAT to /run/agenix/comin-github-token
-      #   2. Runs nixos-rebuild switch to install Comin itself
+      #   1. Injects an ephemeral SSH key via az vm run-command invoke
+      #   2. Copies the GitHub PAT to the VM via scp
+      #   3. Runs nixos-rebuild switch via SSH (output streams in real time)
       # After this, Comin takes over — all subsequent config changes are
       # pulled automatically from this repo.
-      #
-      # The nixos-rebuild can take 30-60+ minutes. To avoid OIDC token
-      # expiration (Azure access tokens last ~60 min), we:
-      #   1. Re-login right before this step (fresh token)
-      #   2. Use `az vm run-command create --no-wait` (async) instead of
-      #      the blocking `invoke`, then poll with `show --instance-view`
-      - name: Azure Login (OIDC) — refresh for bootstrap
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Bootstrap Comin on gw1
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
@@ -584,7 +572,6 @@ jobs:
 
           RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
           VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
-          RUN_CMD_NAME="bootstrap-comin"
 
           # Check if VM exists and is running (may already be running from agenix step)
           VM_VIEW_OUTPUT=""
@@ -635,105 +622,155 @@ jobs:
           fi
           echo "Comin is not active (status: ${COMIN_STATUS:-unknown}). Proceeding with bootstrap..."
 
-          # ── Launch nixos-rebuild asynchronously via managed run command ──
-          # Using `az vm run-command create --no-wait` + polling instead of
-          # blocking `az vm run-command invoke` to avoid OIDC token expiration
-          # on long-running rebuilds (30-60+ min).
-          # Delete any stale run command from a previous (possibly cancelled) run.
-          # This also prevents concurrent bootstraps: `cancel-in-progress: true`
-          # cancels the workflow, but the server-side run command keeps going.
-          # Deleting it here ensures only one bootstrap runs at a time.
-          echo "Cleaning up any stale run command: $RUN_CMD_NAME"
-          az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
-            --name "$RUN_CMD_NAME" --yes 2>/dev/null || true
+          # ── Variables used by cleanup trap (initialised early so trap is safe) ─
+          NETWORK_RG="rg-${{ env.PROJECT_NAME }}-network-${{ env.DEPLOYMENT_LOCATION }}"
+          NSG_NAME="nsg-${{ env.PROJECT_NAME }}-gateway-${{ env.DEPLOYMENT_LOCATION }}"
+          NSG_RULE_NAME=""
+          VM_IP=""
+          EPHEMERAL_KEY_DIR=""
+          EPHEMERAL_KEY_COMMENT=""
+          PAT_FILE=""
+          KNOWN_HOSTS_FILE=""
 
-          echo "Creating async run command: $RUN_CMD_NAME"
-          az vm run-command create \
-            --resource-group "$RG" \
-            --vm-name "$VM_NAME" \
-            --name "$RUN_CMD_NAME" \
-            --script $'set -eo pipefail\nset +u; source /etc/profile; set -u\necho "--- bootstrap started at $(date -Iseconds) ---"\n\n# Write PAT for Comin (temporary bootstrap — agenix takes over after first rebuild)\nmkdir -p /run/agenix\nprintf "%s" "$GITHUB_PAT" > /run/agenix/comin-github-token\nchmod 0400 /run/agenix/comin-github-token\n\n# First nixos-rebuild installs Comin + agenix. After this, Comin is self-sustaining.\nexport NIX_CONFIG="access-tokens = github.com=$GITHUB_PAT"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "--- bootstrap finished at $(date -Iseconds) ---"\necho "BOOTSTRAP_SUCCESS"' \
-            --parameters '[{"name":"GITHUB_PAT","value":"'"$GH_PAT"'"}]' \
-            --timeout-in-seconds 5400 \
-            --async-execution true \
-            --no-wait
-
-          # ── Poll for completion ──────────────────────────────────────────
-          TIMEOUT_MINUTES=90
-          POLL_INTERVAL=30    # seconds
-          MAX_POLLS=$(( TIMEOUT_MINUTES * 60 / POLL_INTERVAL ))
-          MAX_CONSECUTIVE_FAILURES=5
-          CONSECUTIVE_FAILURES=0
-          echo "Polling run command status (timeout: ${TIMEOUT_MINUTES} min, interval: ${POLL_INTERVAL}s, max polls: ${MAX_POLLS}) ..."
-          for i in $(seq 1 $MAX_POLLS); do
-            sleep $POLL_INTERVAL
-
-            INSTANCE_VIEW=$(az vm run-command show \
-              --resource-group "$RG" \
-              --vm-name "$VM_NAME" \
-              --name "$RUN_CMD_NAME" \
-              --instance-view \
-              --query "instanceView" \
-              --output json 2>&1) || {
-              CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-              echo "::warning::Poll $i: az vm run-command show failed ($CONSECUTIVE_FAILURES/${MAX_CONSECUTIVE_FAILURES} consecutive). Output: $INSTANCE_VIEW"
-              if [ "$CONSECUTIVE_FAILURES" -ge "$MAX_CONSECUTIVE_FAILURES" ]; then
-                echo "::error::Aborting after $MAX_CONSECUTIVE_FAILURES consecutive poll failures."
-                az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
-                  --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
-                exit 1
+          # ── Cleanup trap: runs on EXIT (success or failure) ───────────────────
+          cleanup_ssh() {
+            echo "Cleaning up ephemeral resources..."
+            # Remove SSH key and temporary sudoers entry from the VM
+            if [ -d "${EPHEMERAL_KEY_DIR}" ] && [ -n "${VM_IP}" ] && [ -n "${EPHEMERAL_KEY_COMMENT}" ]; then
+              if [ -f "${KNOWN_HOSTS_FILE}" ]; then
+                ssh -i "${EPHEMERAL_KEY_DIR}/id" \
+                  -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" -o StrictHostKeyChecking=yes \
+                  -o BatchMode=yes -o ConnectTimeout=10 -o IdentitiesOnly=yes \
+                  "azureuser@${VM_IP}" \
+                  "sed -i '/${EPHEMERAL_KEY_COMMENT}/d' ~/.ssh/authorized_keys && sudo rm -f /etc/sudoers.d/bootstrap-temp" \
+                  2>/dev/null || true
+              else
+                ssh -i "${EPHEMERAL_KEY_DIR}/id" \
+                  -o StrictHostKeyChecking=no \
+                  -o BatchMode=yes -o ConnectTimeout=10 -o IdentitiesOnly=yes \
+                  "azureuser@${VM_IP}" \
+                  "sed -i '/${EPHEMERAL_KEY_COMMENT}/d' ~/.ssh/authorized_keys && sudo rm -f /etc/sudoers.d/bootstrap-temp" \
+                  2>/dev/null || true
               fi
-              continue
-            }
-            CONSECUTIVE_FAILURES=0
+            fi
+            # Remove temporary NSG rule that allowed runner SSH access
+            if [ -n "${NSG_RULE_NAME}" ]; then
+              az network nsg rule delete \
+                --resource-group "${NETWORK_RG}" \
+                --nsg-name "${NSG_NAME}" \
+                --name "${NSG_RULE_NAME}" 2>/dev/null || true
+            fi
+            [ -n "${EPHEMERAL_KEY_DIR}" ] && rm -rf "${EPHEMERAL_KEY_DIR}" 2>/dev/null || true
+            [ -n "${PAT_FILE}" ]          && rm -f  "${PAT_FILE}"          2>/dev/null || true
+            [ -n "${KNOWN_HOSTS_FILE}" ]  && rm -f  "${KNOWN_HOSTS_FILE}"  2>/dev/null || true
+          }
+          trap cleanup_ssh EXIT
 
-            EXEC_STATE=$(printf '%s' "$INSTANCE_VIEW" | jq -r '.executionState // "Unknown"')
-            echo "  poll $i/${MAX_POLLS}: executionState=$EXEC_STATE"
+          # ── Get VM public IP for SSH ─────────────────────────────────────────
+          VM_IP=$(az vm show -d --resource-group "$RG" --name "$VM_NAME" --query publicIps -o tsv)
+          if [ -z "$VM_IP" ]; then
+            echo "::error::Could not resolve public IP for $VM_NAME"
+            exit 1
+          fi
 
-            case "$EXEC_STATE" in
-              Succeeded|Failed)
-                echo "Run command finished with state: $EXEC_STATE"
-                # Extract stdout/stderr from the instance view
-                STDOUT_OUTPUT=$(printf '%s' "$INSTANCE_VIEW" | jq -r '.output // "(no output)"')
-                STDERR_OUTPUT=$(printf '%s' "$INSTANCE_VIEW" | jq -r '.error // "(no error)"')
-                echo "=== Remote stdout ==="
-                echo "$STDOUT_OUTPUT"
-                echo "=== Remote stderr ==="
-                echo "$STDERR_OUTPUT"
-                echo "====================="
+          # ── Generate ephemeral SSH keypair ────────────────────────────────────
+          EPHEMERAL_KEY_DIR=$(mktemp -d)
+          chmod 700 "$EPHEMERAL_KEY_DIR"
+          EPHEMERAL_KEY_COMMENT="deploy-infra-ephemeral-$$-$(date +%s)"
+          ssh-keygen -t ed25519 -N '' -C "$EPHEMERAL_KEY_COMMENT" -f "$EPHEMERAL_KEY_DIR/id" >/dev/null
+          EPHEMERAL_PUBKEY=$(cat "$EPHEMERAL_KEY_DIR/id.pub")
 
-                if [ "$EXEC_STATE" = "Failed" ]; then
-                  echo "::error::Bootstrap run command failed on $VM_NAME"
-                  # Cleanup the run command resource
-                  az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
-                    --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
-                  exit 1
-                fi
+          # ── PAT temp file — never passes PAT via command-line args ────────────
+          PAT_FILE=$(mktemp)
+          printf '%s' "$GH_PAT" > "$PAT_FILE"
+          KNOWN_HOSTS_FILE=$(mktemp)
+          chmod 600 "$KNOWN_HOSTS_FILE"
 
-                if ! echo "$STDOUT_OUTPUT" | grep -q "BOOTSTRAP_SUCCESS"; then
-                  echo "::error::nixos-rebuild did not emit BOOTSTRAP_SUCCESS sentinel — bootstrap likely failed."
-                  az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
-                    --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
-                  exit 1
-                fi
+          # ── Temporarily allow SSH from this runner (NSG only permits known IPs) ─
+          RUNNER_IP=$(curl -sf --retry 3 https://api.ipify.org || curl -sf --retry 3 https://icanhazip.com)
+          if [ -z "$RUNNER_IP" ]; then
+            echo "::error::Could not determine runner public IP for NSG rule"
+            exit 1
+          fi
+          NSG_RULE_NAME="AllowBootstrapSSH-$$-$(date +%s)"
+          echo "Adding temporary NSG rule ${NSG_RULE_NAME} for runner IP ${RUNNER_IP} ..."
+          az network nsg rule create \
+            --resource-group "$NETWORK_RG" \
+            --nsg-name "$NSG_NAME" \
+            --name "$NSG_RULE_NAME" \
+            --priority 999 \
+            --direction Inbound \
+            --access Allow \
+            --protocol Tcp \
+            --source-address-prefix "${RUNNER_IP}/32" \
+            --destination-port-range 22 \
+            --output none
 
-                # Cleanup the run command resource
-                az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
-                  --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
+          # ── Inject SSH key, grant bootstrap sudoers, capture VM host key ─────
+          # Runs as root via Azure Run Command — single blocking call (~1 min).
+          # Outputs the VM's ed25519 host key on stdout for strict host-key pinning.
+          echo "Injecting ephemeral SSH key and bootstrap sudoers into $VM_NAME..."
+          INJECT_SCRIPT=$(printf '%s\n' \
+            "mkdir -p /home/azureuser/.ssh" \
+            "echo '${EPHEMERAL_PUBKEY}' >> /home/azureuser/.ssh/authorized_keys" \
+            "chmod 600 /home/azureuser/.ssh/authorized_keys" \
+            "chown -R azureuser:users /home/azureuser/.ssh" \
+            "echo 'azureuser ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/bootstrap-temp" \
+            "chmod 440 /etc/sudoers.d/bootstrap-temp" \
+            "cat /etc/ssh/ssh_host_ed25519_key.pub")
+          INJECT_OUT=$(mktemp)
+          .github/scripts/az-run-command.sh "$RG" "$VM_NAME" "$INJECT_SCRIPT" > "$INJECT_OUT"
 
-                echo "✅ Comin bootstrap complete. Future config changes will be pulled automatically."
-                exit 0
-                ;;
-              Running|Pending)
-                # Still running — continue polling
-                ;;
-              *)
-                echo "::warning::Unexpected executionState: $EXEC_STATE"
-                ;;
-            esac
-          done
+          # Extract VM host key and build a known_hosts file for strict verification
+          HOST_KEY_DATA=$(grep '^ssh-ed25519 ' "$INJECT_OUT" | head -1 | awk '{print $1, $2}')
+          rm -f "$INJECT_OUT"
+          if [ -z "$HOST_KEY_DATA" ]; then
+            echo "::error::Could not retrieve SSH host key from $VM_NAME"
+            exit 1
+          fi
+          echo "${VM_IP} ${HOST_KEY_DATA}" > "$KNOWN_HOSTS_FILE"
+          echo "Pinned VM SSH host key for ${VM_IP}"
 
-          echo "::error::Bootstrap timed out after ${TIMEOUT_MINUTES} minutes"
-          az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
-            --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
-          exit 1
+          # ── Write bootstrap script to a temp file ────────────────────────────
+          BOOTSTRAP_SCRIPT=$(mktemp)
+          cat > "$BOOTSTRAP_SCRIPT" <<SCRIPT
+          set -eo pipefail
+          # NixOS /etc/profile references __ETC_PROFILE_SOURCED which is unbound
+          # on first invocation; temporarily disable nounset to avoid failure.
+          set +u; source /etc/profile; set -u
+          mkdir -p /run/agenix
+          cat /tmp/comin_pat_bootstrap > /run/agenix/comin-github-token
+          chmod 600 /run/agenix/comin-github-token
+          rm -f /tmp/comin_pat_bootstrap
+          echo "--- bootstrap started at \$(date -Iseconds) ---"
+          export NIX_CONFIG="access-tokens = github.com=\$(cat /run/agenix/comin-github-token)"
+          nixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1
+          echo "nixos-rebuild completed successfully"
+          SCRIPT
+
+          # ── Copy PAT to VM (cleaned up by bootstrap script) ──────────────────
+          scp -i "$EPHEMERAL_KEY_DIR/id" \
+            -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            "$PAT_FILE" "azureuser@${VM_IP}:/tmp/comin_pat_bootstrap"
+
+          # ── Stream nixos-rebuild output via SSH (90-min timeout) ─────────────
+          # BOOTSTRAP_TIMEOUT_SECONDS = 90 min: nixos-rebuild of a full NixOS
+          # system takes 30-60+ min; 90 min matches the old polling loop deadline.
+          BOOTSTRAP_TIMEOUT_SECONDS=5400
+          echo "Starting nixos-rebuild bootstrap via SSH (output streams in real time)..."
+          timeout "$BOOTSTRAP_TIMEOUT_SECONDS" ssh -i "$EPHEMERAL_KEY_DIR/id" \
+            -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o ConnectTimeout=30 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=10 \
+            -o IdentitiesOnly=yes \
+            "azureuser@${VM_IP}" \
+            "sudo bash -s" < "$BOOTSTRAP_SCRIPT"
+
+          rm -f "$BOOTSTRAP_SCRIPT"
+          echo "✅ Comin bootstrap complete. Future config changes will be pulled automatically."
