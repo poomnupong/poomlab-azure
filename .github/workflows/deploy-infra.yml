@@ -43,10 +43,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate main template
-        run: az bicep build --file infra/main.bicep
+        run: |
+          set -euxo pipefail
+          az bicep build --file infra/main.bicep
 
       - name: Validate gallery template
-        run: az bicep build --file infra/gallery.bicep
+        run: |
+          set -euxo pipefail
+          az bicep build --file infra/gallery.bicep
 
   # ------------------------------------------------------------------
   # Stage NixOS Image (only on push to main or manual dispatch)
@@ -71,6 +75,7 @@ jobs:
 
       - name: Deploy Gallery Infrastructure
         run: |
+          set -euxo pipefail
           az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --template-file infra/gallery.bicep \
@@ -83,7 +88,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           LOCATION="${{ env.DEPLOYMENT_LOCATION }}"
 
@@ -280,7 +285,7 @@ jobs:
         env:
           IMAGE_VERSION: ${{ needs.stage-image.outputs.imageVersion }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           if [ -z "${IMAGE_VERSION:-}" ]; then
             echo "::error::IMAGE_VERSION is empty — stage-image may not have produced an output"
@@ -322,7 +327,7 @@ jobs:
 
       - name: Delete VM if image changed
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
           RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
@@ -376,6 +381,7 @@ jobs:
         env:
           ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
         run: |
+          set -euxo pipefail
           if ! az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --template-file infra/main.bicep \
@@ -394,6 +400,7 @@ jobs:
 
       - name: Show Outputs
         run: |
+          set -euxo pipefail
           az deployment sub show \
             --name "deploy-${{ env.PROJECT_NAME }}" \
             --query properties.outputs \
@@ -408,7 +415,7 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           echo "::add-mask::$GH_PAT"
 
           RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
@@ -546,15 +553,29 @@ jobs:
       #   2. Runs nixos-rebuild switch to install Comin itself
       # After this, Comin takes over — all subsequent config changes are
       # pulled automatically from this repo.
+      #
+      # The nixos-rebuild can take 30-60+ minutes. To avoid OIDC token
+      # expiration (Azure access tokens last ~60 min), we:
+      #   1. Re-login right before this step (fresh token)
+      #   2. Use `az vm run-command create --no-wait` (async) instead of
+      #      the blocking `invoke`, then poll with `show --instance-view`
+      - name: Azure Login (OIDC) — refresh for bootstrap
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Bootstrap Comin on gw1
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           echo "::add-mask::$GH_PAT"
 
           RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
           VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+          RUN_CMD_NAME="bootstrap-comin-$(date +%s)"
 
           # Check if VM exists and is running (may already be running from agenix step)
           VM_VIEW_OUTPUT=""
@@ -581,21 +602,86 @@ jobs:
             az vm start --resource-group "$RG" --name "$VM_NAME"
           fi
 
-          # Bootstrap: write PAT to token file, then nixos-rebuild to install Comin.
-          # After this, Comin is self-sustaining and pulls config changes automatically.
-          # az vm run-command invoke always exits 0 — must parse JSON for failures
-          # (handled by the shared helper).
-          BOOTSTRAP_OUT=$(mktemp)
-          .github/scripts/az-run-command.sh "$RG" "$VM_NAME" \
-            $'set -eo pipefail\nset +u; source /etc/profile; set -u\n\n# Write PAT for Comin (temporary bootstrap — agenix takes over after first rebuild)\nmkdir -p /run/agenix\nprintf "%s" "${GITHUB_PAT}" > /run/agenix/comin-github-token\nchmod 0400 /run/agenix/comin-github-token\n\n# First nixos-rebuild installs Comin + agenix. After this, Comin is self-sustaining.\nexport NIX_CONFIG="access-tokens = github.com=${GITHUB_PAT}"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "BOOTSTRAP_SUCCESS"' \
-            --parameters "GITHUB_PAT=$GH_PAT" \
-            | tee "$BOOTSTRAP_OUT"
+          # ── Launch nixos-rebuild asynchronously via managed run command ──
+          # Using `az vm run-command create --no-wait` + polling instead of
+          # blocking `az vm run-command invoke` to avoid OIDC token expiration
+          # on long-running rebuilds (30-60+ min).
+          echo "Creating async run command: $RUN_CMD_NAME"
+          az vm run-command create \
+            --resource-group "$RG" \
+            --vm-name "$VM_NAME" \
+            --name "$RUN_CMD_NAME" \
+            --script $'set -eo pipefail\nset +u; source /etc/profile; set -u\necho "--- bootstrap started at $(date -Iseconds) ---"\n\n# Write PAT for Comin (temporary bootstrap — agenix takes over after first rebuild)\nmkdir -p /run/agenix\nprintf "%s" "$GITHUB_PAT" > /run/agenix/comin-github-token\nchmod 0400 /run/agenix/comin-github-token\n\n# First nixos-rebuild installs Comin + agenix. After this, Comin is self-sustaining.\nexport NIX_CONFIG="access-tokens = github.com=$GITHUB_PAT"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "--- bootstrap finished at $(date -Iseconds) ---"\necho "BOOTSTRAP_SUCCESS"' \
+            --parameters '[{"name":"GITHUB_PAT","value":"'"$GH_PAT"'"}]' \
+            --timeout-in-seconds 3600 \
+            --async-execution true \
+            --no-wait
 
-          if ! grep -q "BOOTSTRAP_SUCCESS" "$BOOTSTRAP_OUT"; then
-            rm -f "$BOOTSTRAP_OUT"
-            echo "::error::nixos-rebuild did not emit the success sentinel — bootstrap likely failed."
-            exit 1
-          fi
-          rm -f "$BOOTSTRAP_OUT"
+          # ── Poll for completion ──────────────────────────────────────────
+          echo "Polling run command status (timeout: 90 min) ..."
+          MAX_POLLS=180       # 180 × 30s = 90 min
+          POLL_INTERVAL=30    # seconds
+          for i in $(seq 1 $MAX_POLLS); do
+            sleep $POLL_INTERVAL
 
-          echo "✅ Comin bootstrap complete. Future config changes will be pulled automatically."
+            INSTANCE_VIEW=$(az vm run-command show \
+              --resource-group "$RG" \
+              --vm-name "$VM_NAME" \
+              --name "$RUN_CMD_NAME" \
+              --instance-view \
+              --query "instanceView" \
+              --output json 2>&1) || {
+              echo "::warning::Poll $i: az vm run-command show failed (token refresh needed?), retrying..."
+              continue
+            }
+
+            EXEC_STATE=$(printf '%s' "$INSTANCE_VIEW" | jq -r '.executionState // "Unknown"')
+            echo "  poll $i/${MAX_POLLS}: executionState=$EXEC_STATE"
+
+            case "$EXEC_STATE" in
+              Succeeded|Failed)
+                echo "Run command finished with state: $EXEC_STATE"
+                # Extract stdout/stderr from the instance view
+                STDOUT_OUTPUT=$(printf '%s' "$INSTANCE_VIEW" | jq -r '.output // "(no output)"')
+                STDERR_OUTPUT=$(printf '%s' "$INSTANCE_VIEW" | jq -r '.error // "(no error)"')
+                echo "=== Remote stdout ==="
+                echo "$STDOUT_OUTPUT"
+                echo "=== Remote stderr ==="
+                echo "$STDERR_OUTPUT"
+                echo "====================="
+
+                if [ "$EXEC_STATE" = "Failed" ]; then
+                  echo "::error::Bootstrap run command failed on $VM_NAME"
+                  # Cleanup the run command resource
+                  az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
+                    --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
+                  exit 1
+                fi
+
+                if ! echo "$STDOUT_OUTPUT" | grep -q "BOOTSTRAP_SUCCESS"; then
+                  echo "::error::nixos-rebuild did not emit BOOTSTRAP_SUCCESS sentinel — bootstrap likely failed."
+                  az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
+                    --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
+                  exit 1
+                fi
+
+                # Cleanup the run command resource
+                az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
+                  --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
+
+                echo "✅ Comin bootstrap complete. Future config changes will be pulled automatically."
+                exit 0
+                ;;
+              Running|Pending)
+                # Still running — continue polling
+                ;;
+              *)
+                echo "::warning::Unexpected executionState: $EXEC_STATE"
+                ;;
+            esac
+          done
+
+          echo "::error::Bootstrap timed out after $((MAX_POLLS * POLL_INTERVAL / 60)) minutes"
+          az vm run-command delete --resource-group "$RG" --vm-name "$VM_NAME" \
+            --name "$RUN_CMD_NAME" --yes --no-wait 2>/dev/null || true
+          exit 1
