@@ -77,9 +77,10 @@ is active on each VM.
 - Secrets are encrypted with [age](https://age-encryption.org/) and stored
   as `.age` files in `nixos/secrets/`.
 - The encryption recipients are listed in `nixos/secrets/secrets.nix`.
-- Each VM decrypts secrets using its SSH host key (converted to an age key).
-- You (the admin) also have an age key for re-encrypting (if your SSH key
-  is ed25519).
+- Each VM decrypts secrets using its SSH host key (converted to an age key
+  via `ssh-to-age`).
+- The VM's SSH host key (`/etc/ssh/ssh_host_ed25519_key`) is the only
+  decryption key — `ADMIN_SSH_PUBLIC_KEY` is unrelated (it's for SSH login).
 
 ### File Structure
 
@@ -99,8 +100,7 @@ nixos/secrets/
 2. The auto-setup step then:
    - Extracts the VM's SSH host ed25519 public key via `az vm run-command`
    - Converts it to an age public key using `ssh-to-age`
-   - Derives the admin's age public key from `ADMIN_SSH_PUBLIC_KEY` (if ed25519)
-   - Updates `nixos/secrets/secrets.nix` with the real keys
+   - Updates `nixos/secrets/secrets.nix` with the real key
    - Encrypts `GH_PAT` → `comin-github-token.age` using `age`
    - Commits and pushes to `main`
 3. Comin (now running on the VM) pulls the commit with properly encrypted
@@ -108,27 +108,24 @@ nixos/secrets/
 
 **The only manual prerequisite:** set the `GH_PAT` repository secret.
 
-### Rotating a Secret (100% Git Workflow)
+### Rotating a Secret
 
-1. Edit the secret locally:
-   ```bash
-   cd nixos && agenix -e secrets/comin-github-token.age
-   ```
-   This decrypts → opens in `$EDITOR` → re-encrypts on save.
+To rotate secrets, you have two options:
 
-2. Commit and push:
-   ```bash
-   git add secrets/comin-github-token.age
-   git commit -m "chore: rotate GitHub PAT"
-   git push
-   ```
+**Option A (hands-free):** Update the `GH_PAT` repository secret, then
+re-run `deploy-infra` — it re-encrypts and commits automatically.
 
-3. Comin pulls the new commit → agenix decrypts on the VM → services
-   restart with the new secret.
+**Option B (local `agenix -e`):** If you want to edit secrets locally,
+you need to add your own age public key to `nixos/secrets/secrets.nix`
+so that agenix can encrypt for both you and the VM. To derive your age
+key from your SSH key:
 
-> **Note:** To use `agenix -e` locally, you need your SSH private key
-> (`~/.ssh/id_ed25519`) and `ADMIN_SSH_PUBLIC_KEY` must be ed25519. Set
-> `AGENIX_IDENTITY=~/.ssh/id_ed25519` if needed.
+```bash
+cat ~/.ssh/id_ed25519.pub | ssh-to-age
+```
+
+Add the resulting `age1...` key to `secrets.nix`, re-encrypt with
+`agenix -r`, then use `agenix -e` to edit secrets locally.
 
 ### Rotating the GitHub PAT
 
@@ -142,7 +139,7 @@ nixos/secrets/
    ```
 3. **Option A (hands-free):** Run `deploy-infra` — it will re-encrypt the PAT
    automatically and commit the updated `.age` file.
-4. **Option B (git workflow):** Update the agenix-encrypted token locally:
+4. **Option B (local):** Update the agenix-encrypted token locally:
    ```bash
    cd nixos && agenix -e secrets/comin-github-token.age
    # Paste the new PAT, save
