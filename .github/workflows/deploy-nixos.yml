@@ -183,20 +183,22 @@ jobs:
 
           # az vm run-command invoke always exits 0 regardless of remote script
           # outcome. We must parse the JSON response to detect failures.
-          # NOTE: stderr is NOT redirected into stdout so that the Azure Run
-          # Command JSON separates stdout (StdOut) from stderr (StdErr).
+          # stderr is merged into stdout (2>&1) so all output lands in the
+          # StdOut field of the Run Command JSON response, maximising visibility
+          # in the Actions log. We detect failures via the /failed status code
+          # and a NIXOS_REBUILD_SUCCESS sentinel emitted on success.
           OUTPUT=$(az vm run-command invoke \
             --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
             --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
             --command-id RunShellScript \
-            --scripts "export NIX_CONFIG=\"access-tokens = github.com=\${GITHUB_TOKEN}\" && nixos-rebuild switch --flake \"github:${{ github.repository }}#gw1\"" \
+            --scripts $'set -euo pipefail\nexport NIX_CONFIG="access-tokens = github.com=${GITHUB_TOKEN}"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "NIXOS_REBUILD_SUCCESS"' \
             --parameters "GITHUB_TOKEN=$GH_TOKEN" \
             --output json)
 
-          # Print stdout and stderr sections for visibility in the Actions log.
+          # Print the full stdout (which now includes merged stderr) for visibility.
           STDOUT=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message // empty')
           STDERR=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdErr")) | .message // empty')
-          echo "--- stdout ---"
+          echo "--- stdout (includes stderr) ---"
           echo "$STDOUT"
           if [ -n "$STDERR" ]; then
             echo "--- stderr ---"
@@ -211,9 +213,8 @@ jobs:
             exit 1
           fi
 
-          # Also fail if stderr has content — the remote script should not produce
-          # stderr output on a clean run.
-          if [ -n "$STDERR" ]; then
-            echo "::error::Remote script produced stderr output — deployment likely failed."
+          # Also verify the success sentinel is present in stdout.
+          if ! echo "$STDOUT" | grep -q "NIXOS_REBUILD_SUCCESS"; then
+            echo "::error::nixos-rebuild did not emit the success sentinel — deployment likely failed."
             exit 1
           fi
