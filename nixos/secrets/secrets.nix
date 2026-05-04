@@ -1,37 +1,19 @@
 # secrets.nix — Agenix recipients list
 #
-# Maps encrypted secret files to the age public keys allowed to decrypt them.
+# AUTO-POPULATED by deploy-infra.yml — do not edit the key values manually.
+# To rotate secrets, see docs/comin-deployment.md.
 #
-# ┌────────────────────────────────────────────────────────────────────┐
-# │  This file is AUTO-POPULATED by deploy-infra.yml after the first  │
-# │  VM is created. No manual editing needed.                         │
-# │                                                                    │
-# │  deploy-infra automatically:                                       │
-# │    1. Extracts the VM's SSH host key → converts to age public key │
-# │    2. Updates this file with the real key                         │
-# │    3. Encrypts secrets (GH_PAT) → .age files                     │
-# │    4. Commits and pushes to the repo                              │
-# │                                                                    │
-# │  To rotate secrets later, see docs/comin-deployment.md.           │
-# └────────────────────────────────────────────────────────────────────┘
+# VM keys extracted from SSH host keys via az vm run-command + ssh-to-age.
+# The VM's SSH host key is the only recipient — agenix decrypts on the VM
+# using /etc/ssh/ssh_host_ed25519_key (the private half of this key).
 
 let
-  # ── VM host keys ────────────────────────────────────────────────────
-  # Auto-populated by deploy-infra from each VM's SSH host key.
-  # The VM decrypts secrets using /etc/ssh/ssh_host_ed25519_key.
-  # To extract manually: ssh-keyscan <vm-ip> 2>/dev/null | ssh-to-age
-  gw1 = "age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+  # ── VM host keys ────────────────────────────────────────────────
+  gw1 = "age1802l3yqtg3een7ewpt9sse8nhnp2d2lxjf4uc5974n0j4lzv69asntxfla";
 
-  # All systems that need access to shared secrets
   allSystems = [ gw1 ];
 in
 {
-  # ── Comin GitHub PAT ────────────────────────────────────────────────
-  # GitHub Personal Access Token used by Comin to pull from this private repo
-  # and by the postDeploymentCommand to report commit status / create issues.
   "comin-github-token.age".publicKeys = allSystems;
-
-  # ── Tailscale auth key ─────────────────────────────────────────────
-  # Tailscale auth key for automatic VPN enrollment on first boot.
   "tailscale-authkey.age".publicKeys = allSystems;
 }
