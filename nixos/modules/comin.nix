@@ -62,7 +62,7 @@ let
     # ── On failure, also create a GitHub issue ─────────────────────────
     if [ "$GH_STATE" = "failure" ]; then
       SHORT_SHA="''${SHA:0:7}"
-      JOURNAL=$(${pkgs.systemd}/bin/journalctl -u comin --since "10 minutes ago" --no-pager 2>/dev/null | tail -100 || echo "Could not retrieve journal logs")
+      JOURNAL=$(${pkgs.systemd}/bin/journalctl -u comin --since "30 minutes ago" --no-pager 2>/dev/null | tail -100 || echo "Could not retrieve journal logs")
 
       ISSUE_BODY=$(cat <<EOF
     ## Comin deployment failed on \`$HOSTNAME\`
