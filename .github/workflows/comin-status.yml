@@ -115,28 +115,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          OUTPUT=$(az vm run-command invoke \
-            --resource-group "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
-            --name "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
-            --command-id RunShellScript \
-            --scripts $'set -euo pipefail\nsource /etc/profile\necho "=== Comin service status ==="\nsystemctl is-active comin || echo "comin service is NOT active"\necho ""\necho "=== Comin journal (last 20 lines) ==="\njournalctl -u comin --no-pager -n 20 2>/dev/null || echo "No comin journal entries"\necho ""\necho "=== Current NixOS generation ==="\nreadlink /nix/var/nix/profiles/system || echo "unknown"\necho ""\necho "STATUS_CHECK_COMPLETE"' \
-            --output json)
+          OUTPUT_FILE=$(mktemp)
+          .github/scripts/az-run-command.sh \
+            "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
+            "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
+            $'set -euo pipefail\nsource /etc/profile\necho "=== Comin service status ==="\nsystemctl is-active comin || echo "comin service is NOT active"\necho ""\necho "=== Comin journal (last 20 lines) ==="\njournalctl -u comin --no-pager -n 20 2>/dev/null || echo "No comin journal entries"\necho ""\necho "=== Current NixOS generation ==="\nreadlink /nix/var/nix/profiles/system || echo "unknown"\necho ""\necho "STATUS_CHECK_COMPLETE"' \
+            > "$OUTPUT_FILE"
 
-          STDOUT=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message // empty')
-          STDERR=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdErr")) | .message // empty')
+          STDOUT=$(cat "$OUTPUT_FILE")
+          rm -f "$OUTPUT_FILE"
           echo "--- Comin Status Report ---"
           echo "$STDOUT"
-          if [ -n "$STDERR" ]; then
-            echo "--- stderr ---"
-            echo "$STDERR"
-          fi
-
-          # Check for the Run Command failure code
-          FAILED=$(echo "$OUTPUT" | jq -r '[.value[] | select(.code | test("/failed"))] | length')
-          if [ "$FAILED" -gt 0 ]; then
-            echo "::error::Status check script failed on the VM."
-            exit 1
-          fi
 
           if ! echo "$STDOUT" | grep -q "STATUS_CHECK_COMPLETE"; then
             echo "::error::Status check did not complete successfully."
