@@ -210,11 +210,13 @@ and creates an issue with a checklist for reviewing all secrets.
 - **`az vm run-command` conflicts**: When `timeout` kills the local `az`
   process, the VM-side RunCommand extension keeps running. Subsequent
   `run-command invoke` calls fail with HTTP 409 Conflict until it finishes.
-  The current mitigation polls the extension status via instance-view and
-  retries with backoff (20×45s). A better long-term fix is to **move SSH
-  key injection into the Bicep `osProfile.linuxConfiguration.ssh.publicKeys`**
-  so that the ephemeral key is baked into VM creation, eliminating the
-  need for run-command during bootstrap entirely.
+  The bootstrap step avoids this by using **a single, untimed Run Command
+  call** (only to inject the ephemeral SSH key + capture the host key) and
+  doing the Comin status probe **in-band over SSH** instead. A long-term
+  fix would be to **move SSH key injection into the Bicep
+  `osProfile.linuxConfiguration.ssh.publicKeys`** so that the ephemeral
+  key is baked into VM creation, eliminating Run Command from bootstrap
+  entirely.
 
 - **Comin vs pure in-band SSH**: Comin provides GitOps pull (VM
   self-updates on push, no CI needed). Pure SSH means every config change

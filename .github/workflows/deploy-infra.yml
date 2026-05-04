@@ -598,29 +598,12 @@ jobs:
             az vm start --resource-group "$RG" --name "$VM_NAME"
           fi
 
-          # ── Skip if Comin is already running (idempotency) ───────────
-          # On an already-bootstrapped VM, Comin is self-sustaining and
-          # re-running nixos-rebuild (30-60+ min) is unnecessary. Check
-          # the service status before launching the expensive rebuild.
-          echo "Checking if Comin is already active on $VM_NAME..."
+          # ── Wait for VM agent (needed for the single Run Command inject below) ─
           az vm wait \
             --resource-group "$RG" \
             --name "$VM_NAME" \
             --custom "instanceView.vmAgent.statuses[?code=='ProvisioningState/succeeded']" \
             --timeout 300
-
-          COMIN_CHECK=$(mktemp)
-          timeout 300 .github/scripts/az-run-command.sh "$RG" "$VM_NAME" \
-            'set +u; source /etc/profile; set -u; systemctl is-active comin 2>/dev/null || echo inactive' \
-            > "$COMIN_CHECK" 2>/dev/null || true
-          COMIN_STATUS=$(head -n 1 "$COMIN_CHECK" | xargs)
-          rm -f "$COMIN_CHECK"
-
-          if [ "$COMIN_STATUS" = "active" ]; then
-            echo "✅ Comin is already active on $VM_NAME. Skipping bootstrap."
-            exit 0
-          fi
-          echo "Comin is not active (status: ${COMIN_STATUS:-unknown}). Proceeding with bootstrap..."
 
           # ── Variables used by cleanup trap (initialised early so trap is safe) ─
           NETWORK_RG="rg-${{ env.PROJECT_NAME }}-network-${{ env.DEPLOYMENT_LOCATION }}"
@@ -706,36 +689,11 @@ jobs:
             --destination-port-range 22 \
             --output none
 
-          # ── Wait for RunCommand extension to become idle ───────────────────
-          # If the comin status check (above) was killed by `timeout`, the
-          # VM-side RunCommand extension keeps executing.  Poll the VM
-          # instance-view until the extension reports a terminal status
-          # (Succeeded/Failed) or until we hit a generous 15-min ceiling.
-          echo "Waiting for any prior RunCommand extension to finish on $VM_NAME..."
-          RC_WAIT_OK=false
-          for rc_wait in $(seq 1 30); do
-            RC_STATUS=$(az vm get-instance-view \
-              --resource-group "$RG" --name "$VM_NAME" \
-              --query "instanceView.extensions[?name=='RunCommandLinux'].statuses[0].code" \
-              --output tsv 2>/dev/null || echo "unknown")
-            if echo "$RC_STATUS" | grep -qi "succeeded\|failed\|unknown"; then
-              echo "RunCommand extension idle (status: $RC_STATUS) after $(( (rc_wait - 1) * 30 ))s wait."
-              RC_WAIT_OK=true
-              break
-            fi
-            echo "RunCommand extension still busy (status: $RC_STATUS), waiting 30s ($rc_wait/30)..."
-            sleep 30
-          done
-          if [ "$RC_WAIT_OK" != "true" ]; then
-            echo "::warning::RunCommand extension did not become idle after 15 min; proceeding anyway."
-          fi
-
           # ── Inject SSH key, grant bootstrap sudoers, capture VM host key ─────
-          # Runs as root via Azure Run Command — single blocking call (~1 min).
-          # Outputs the VM's ed25519 host key on stdout for strict host-key pinning.
-          #
-          # Retry with back-off: If the extension is STILL busy (edge case),
-          # retry up to 20 times (45 s apart ≈ 15 min window).
+          # Single Run Command call (~1 min). The earlier comin status check that
+          # used `timeout 300 az-run-command` has been replaced with an in-band
+          # SSH probe (after key injection), so there is no risk of a leftover
+          # busy RunCommand extension causing 409 Conflict here.
           echo "Injecting ephemeral SSH key and bootstrap sudoers into $VM_NAME..."
           INJECT_SCRIPT=$(printf '%s\n' \
             "mkdir -p /home/azureuser/.ssh" \
@@ -746,27 +704,7 @@ jobs:
             "chmod 440 /etc/sudoers.d/bootstrap-temp" \
             "cat /etc/ssh/ssh_host_ed25519_key.pub")
           INJECT_OUT=$(mktemp)
-          INJECT_ERR=$(mktemp)
-          INJECT_OK=false
-          for attempt in $(seq 1 20); do
-            if .github/scripts/az-run-command.sh "$RG" "$VM_NAME" "$INJECT_SCRIPT" > "$INJECT_OUT" 2>"$INJECT_ERR"; then
-              INJECT_OK=true
-              break
-            fi
-            if grep -qi "Conflict\|execution is in progress" "$INJECT_ERR"; then
-              echo "Run command still in progress on VM, waiting 45s (attempt $attempt/20)..."
-              sleep 45
-            else
-              cat "$INJECT_ERR" >&2
-              rm -f "$INJECT_ERR"
-              exit 1
-            fi
-          done
-          rm -f "$INJECT_ERR"
-          if [ "$INJECT_OK" != "true" ]; then
-            echo "::error::Failed to inject SSH key after 20 retries (run-command conflict)"
-            exit 1
-          fi
+          .github/scripts/az-run-command.sh "$RG" "$VM_NAME" "$INJECT_SCRIPT" > "$INJECT_OUT"
 
           # Extract VM host key and build a known_hosts file for strict verification
           HOST_KEY_DATA=$(grep '^ssh-ed25519 ' "$INJECT_OUT" | head -1 | awk '{print $1, $2}')
@@ -777,6 +715,29 @@ jobs:
           fi
           echo "${VM_IP} ${HOST_KEY_DATA}" > "$KNOWN_HOSTS_FILE"
           echo "Pinned VM SSH host key for ${VM_IP}"
+
+          # ── In-band SSH probe: skip nixos-rebuild if Comin is already active ─
+          # On an already-bootstrapped VM, Comin is self-sustaining and re-running
+          # nixos-rebuild (30-60+ min) is unnecessary.  Probe Comin over SSH —
+          # this avoids the `az vm run-command` timeout/409-conflict failure mode
+          # entirely.  The cleanup trap will tear down the ephemeral key + NSG
+          # rule on exit either way.
+          echo "Probing Comin status on $VM_NAME via SSH..."
+          COMIN_STATUS=$(ssh -i "$EPHEMERAL_KEY_DIR/id" \
+            -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o ConnectTimeout=30 \
+            -o IdentitiesOnly=yes \
+            "azureuser@${VM_IP}" \
+            'systemctl is-active comin 2>/dev/null || echo inactive' \
+            2>/dev/null | head -n 1 | tr -d '[:space:]') || COMIN_STATUS="unreachable"
+
+          if [ "$COMIN_STATUS" = "active" ]; then
+            echo "✅ Comin is already active on $VM_NAME. Skipping nixos-rebuild bootstrap."
+            exit 0
+          fi
+          echo "Comin is not active (status: ${COMIN_STATUS:-unknown}). Proceeding with bootstrap..."
 
           # ── Write bootstrap script to a temp file ────────────────────────────
           BOOTSTRAP_SCRIPT=$(mktemp)
