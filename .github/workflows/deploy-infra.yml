@@ -390,3 +390,208 @@ jobs:
             --name "deploy-${{ env.PROJECT_NAME }}" \
             --query properties.outputs \
             --output table
+
+      # ── Auto-populate agenix keys and encrypt secrets ────────────────
+      # MUST run before bootstrap so that nixos-rebuild finds valid
+      # age-encrypted .age files (not placeholders). Extracts the VM's
+      # SSH host key, converts to an age public key, encrypts secrets,
+      # and commits back to the repo.
+      - name: Auto-setup agenix secrets for gw1
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$GH_PAT"
+
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+
+          # Check if VM exists and is running
+          VM_VIEW_OUTPUT=""
+          VM_VIEW_EXIT=0
+          VM_VIEW_OUTPUT=$(az vm get-instance-view \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" \
+            --output tsv 2>&1) || VM_VIEW_EXIT=$?
+
+          if [ $VM_VIEW_EXIT -ne 0 ]; then
+            if echo "$VM_VIEW_OUTPUT" | grep -qi "could not be found\|ResourceNotFound\|ResourceGroupNotFound"; then
+              echo "::warning::VM does not exist yet. Skipping agenix setup."
+              exit 0
+            else
+              echo "::error::Unexpected error querying VM: $VM_VIEW_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          POWER_STATE="$VM_VIEW_OUTPUT"
+          if [ "$POWER_STATE" != "PowerState/running" ]; then
+            echo "VM is not running (state: $POWER_STATE). Starting VM..."
+            az vm start --resource-group "$RG" --name "$VM_NAME"
+          fi
+
+          # ── Install age + ssh-to-age ──────────────────────────────────
+          sudo apt-get update -qq && sudo apt-get install -y -qq age
+          go install github.com/Mic92/ssh-to-age/cmd/ssh-to-age@latest
+          export PATH="$HOME/go/bin:$PATH"
+
+          # ── Extract VM SSH host key → age public key ──────────────────
+          OUTPUT=$(az vm run-command invoke \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts 'cat /etc/ssh/ssh_host_ed25519_key.pub' \
+            --output json)
+          VM_SSH_PUBKEY=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message' | head -1 | xargs)
+
+          if [ -z "$VM_SSH_PUBKEY" ] || ! echo "$VM_SSH_PUBKEY" | grep -q "ssh-ed25519"; then
+            echo "::error::Failed to extract VM SSH ed25519 public key"
+            exit 1
+          fi
+
+          VM_AGE_PUBKEY=$(echo "$VM_SSH_PUBKEY" | ssh-to-age)
+          echo "VM age public key: $VM_AGE_PUBKEY"
+
+          # ── Decide whether to re-encrypt ──────────────────────────────
+          # Always re-encrypt if: secrets.nix is missing the key, or any
+          # .age file looks like a placeholder (not real age ciphertext).
+          NEEDS_UPDATE=false
+          if ! grep -qF "$VM_AGE_PUBKEY" nixos/secrets/secrets.nix 2>/dev/null; then
+            echo "secrets.nix does not contain VM age key — will update."
+            NEEDS_UPDATE=true
+          elif ! head -1 nixos/secrets/comin-github-token.age 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
+               || grep -qi "placeholder\|replace" nixos/secrets/comin-github-token.age 2>/dev/null; then
+            echo "comin-github-token.age is missing or looks like a placeholder — will re-encrypt."
+            NEEDS_UPDATE=true
+          elif ! head -1 nixos/secrets/tailscale-authkey.age 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
+               || grep -qi "placeholder\|replace" nixos/secrets/tailscale-authkey.age 2>/dev/null; then
+            echo "tailscale-authkey.age is missing or looks like a placeholder — will re-encrypt."
+            NEEDS_UPDATE=true
+          fi
+
+          if [ "$NEEDS_UPDATE" = "false" ]; then
+            echo "Age keys and encrypted secrets are already up to date. Skipping."
+            exit 0
+          fi
+
+          # ── Update secrets.nix with real VM host key ──────────────────
+          cat > nixos/secrets/secrets.nix << 'SECRETS_EOF'
+# secrets.nix — Agenix recipients list
+#
+# AUTO-POPULATED by deploy-infra.yml — do not edit the key values manually.
+# To rotate secrets, see docs/comin-deployment.md.
+#
+# VM keys extracted from SSH host keys via az vm run-command + ssh-to-age.
+# The VM's SSH host key is the only recipient — agenix decrypts on the VM
+# using /etc/ssh/ssh_host_ed25519_key (the private half of this key).
+
+let
+  # ── VM host keys ────────────────────────────────────────────────
+SECRETS_EOF
+          echo "  gw1 = \"$VM_AGE_PUBKEY\";" >> nixos/secrets/secrets.nix
+          cat >> nixos/secrets/secrets.nix << 'SECRETS_EOF'
+
+  allSystems = [ gw1 ];
+in
+{
+  "comin-github-token.age".publicKeys = allSystems;
+  "tailscale-authkey.age".publicKeys = allSystems;
+}
+SECRETS_EOF
+
+          # ── Encrypt secrets with age ──────────────────────────────────
+          # Encrypt GH_PAT → comin-github-token.age
+          printf '%s' "$GH_PAT" | age -r "$VM_AGE_PUBKEY" -a > nixos/secrets/comin-github-token.age
+
+          # Encrypt placeholder → tailscale-authkey.age
+          # (will be replaced with a real key via agenix -e when available)
+          printf 'PLACEHOLDER_REPLACE_WITH_REAL_KEY' | age -r "$VM_AGE_PUBKEY" -a > nixos/secrets/tailscale-authkey.age
+
+          # ── Commit and push ───────────────────────────────────────────
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add nixos/secrets/
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: auto-populate agenix keys and secrets for gw1 [skip ci]"
+            git push "https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git" HEAD:main
+            echo "✅ Agenix keys and secrets committed."
+          fi
+
+      # ── Bootstrap Comin on fresh VMs ─────────────────────────────────
+      # Runs AFTER agenix secrets are committed so that nixos-rebuild
+      # finds valid age-encrypted .age files. This one-time step:
+      #   1. Writes the GitHub PAT to /run/agenix/comin-github-token
+      #   2. Runs nixos-rebuild switch to install Comin itself
+      # After this, Comin takes over — all subsequent config changes are
+      # pulled automatically from this repo.
+      - name: Bootstrap Comin on gw1
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$GH_PAT"
+
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+
+          # Check if VM exists and is running (may already be running from agenix step)
+          VM_VIEW_OUTPUT=""
+          VM_VIEW_EXIT=0
+          VM_VIEW_OUTPUT=$(az vm get-instance-view \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" \
+            --output tsv 2>&1) || VM_VIEW_EXIT=$?
+
+          if [ $VM_VIEW_EXIT -ne 0 ]; then
+            if echo "$VM_VIEW_OUTPUT" | grep -qi "could not be found\|ResourceNotFound\|ResourceGroupNotFound"; then
+              echo "::warning::VM does not exist yet. Skipping Comin bootstrap."
+              exit 0
+            else
+              echo "::error::Unexpected error querying VM: $VM_VIEW_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          POWER_STATE="$VM_VIEW_OUTPUT"
+          if [ "$POWER_STATE" != "PowerState/running" ]; then
+            echo "VM is not running (state: $POWER_STATE). Starting VM..."
+            az vm start --resource-group "$RG" --name "$VM_NAME"
+          fi
+
+          # Bootstrap: write PAT to token file, then nixos-rebuild to install Comin.
+          # After this, Comin is self-sustaining and pulls config changes automatically.
+          # az vm run-command invoke always exits 0 — must parse JSON for failures.
+          OUTPUT=$(az vm run-command invoke \
+            --resource-group "$RG" \
+            --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts $'set -euo pipefail\nsource /etc/profile\n\n# Write PAT for Comin (temporary bootstrap — agenix takes over after first rebuild)\nmkdir -p /run/agenix\nprintf "%s" "${GITHUB_PAT}" > /run/agenix/comin-github-token\nchmod 0400 /run/agenix/comin-github-token\n\n# First nixos-rebuild installs Comin + agenix. After this, Comin is self-sustaining.\nexport NIX_CONFIG="access-tokens = github.com=${GITHUB_PAT}"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "BOOTSTRAP_SUCCESS"' \
+            --parameters "GITHUB_PAT=$GH_PAT" \
+            --output json)
+
+          STDOUT=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message // empty')
+          STDERR=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdErr")) | .message // empty')
+          echo "--- stdout ---"
+          echo "$STDOUT"
+          if [ -n "$STDERR" ]; then
+            echo "--- stderr ---"
+            echo "$STDERR"
+          fi
+
+          FAILED=$(echo "$OUTPUT" | jq -r '[.value[] | select(.code | test("/failed"))] | length')
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Comin bootstrap failed (Run Command reported a failed status)."
+            exit 1
+          fi
+
+          if ! echo "$STDOUT" | grep -q "BOOTSTRAP_SUCCESS"; then
+            echo "::error::nixos-rebuild did not emit the success sentinel — bootstrap likely failed."
+            exit 1
+          fi
+
+          echo "✅ Comin bootstrap complete. Future config changes will be pulled automatically."

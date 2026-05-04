@@ -1,7 +1,8 @@
 # tailscale.nix — Tailscale VPN module
 #
 # Enables the Tailscale daemon and configures automatic authentication.
-# Set the auth key via a NixOS secret or an environment-specific override.
+# The auth key is managed by agenix — see modules/agenix.nix for the
+# secret declaration and nixos/secrets/ for the encrypted file.
 
 { config, pkgs, pkgs-unstable, ... }:
 
@@ -14,9 +15,8 @@
   };
 
   # ── One-shot auth unit ───────────────────────────────────────────────
-  # Authenticate tailscale on first boot using an auth key stored as a secret.
-  # TODO: provision the auth key via a secrets manager (e.g. agenix, sops-nix)
-  # and adjust the path below. The key file should contain only the raw auth key.
+  # Authenticate tailscale on first boot using an auth key decrypted by agenix.
+  # The key file is provisioned at /run/agenix/tailscale-authkey by agenix.
   systemd.services.tailscale-autoconnect = {
     description = "Tailscale auto-connect on first boot";
     after = [ "network-online.target" "tailscale.service" ];
@@ -31,15 +31,23 @@
         exit 0
       fi
 
-      # TODO: replace /run/secrets/tailscale-authkey with your actual secrets path.
-      AUTH_KEY_FILE="/run/secrets/tailscale-authkey"
+      # Agenix decrypts the auth key to /run/agenix/tailscale-authkey
+      AUTH_KEY_FILE="/run/agenix/tailscale-authkey"
       if [ ! -f "$AUTH_KEY_FILE" ]; then
         echo "No Tailscale auth key file found at $AUTH_KEY_FILE, skipping."
         exit 0
       fi
 
+      # Skip if the file contains a placeholder (deploy-infra populates a
+      # placeholder until a real Tailscale auth key is set via agenix -e)
+      AUTH_KEY=$(cat "$AUTH_KEY_FILE")
+      if [ -z "$AUTH_KEY" ] || echo "$AUTH_KEY" | grep -qi "PLACEHOLDER"; then
+        echo "Tailscale auth key is a placeholder, skipping. Set a real key via agenix -e."
+        exit 0
+      fi
+
       ${pkgs-unstable.tailscale}/bin/tailscale up \
-        --authkey "$(cat "$AUTH_KEY_FILE")" \
+        --authkey "$AUTH_KEY" \
         --accept-routes \
         --advertise-exit-node=false
     '';
