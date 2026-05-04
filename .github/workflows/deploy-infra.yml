@@ -259,6 +259,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Don't persist GITHUB_TOKEN as http.https://github.com/.extraheader.
+          # The workflow's GITHUB_TOKEN is read-only (permissions.contents: read)
+          # and would otherwise override the URL-embedded GH_PAT credentials in
+          # the agenix auto-setup `git push`, causing HTTP 403. With this set,
+          # no extraheader is written and the explicit URL-embedded PAT is the
+          # only credential used for the push (and only for that one command).
+          persist-credentials: false
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
