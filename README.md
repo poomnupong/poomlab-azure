@@ -73,16 +73,17 @@ The flake should reference the `nixos-azimage-builder` repo as an input for the 
 
 ## CI/CD Workflows
 
-Four GitHub Actions workflows manage validation and deployment for this repository:
+Five GitHub Actions workflows manage validation, deployment, and maintenance:
 
 | Workflow | File | Trigger | Purpose |
 |---|---|---|---|
 | `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | **Validation only — never deploys.** Uses `dorny/paths-filter` to run only the relevant checks: Bicep lint + `az deployment what-if` for `infra/**` changes; `nix flake check` for `nixos/**` changes. These are the required status checks for branch protection. |
-| `deploy-infra` | `.github/workflows/deploy-infra.yml` | Push to `main` on `infra/**`, or `workflow_dispatch` | Stages the NixOS gallery image and deploys Bicep infrastructure. |
-| `deploy-nixos` | `.github/workflows/deploy-nixos.yml` | Push to `main` on `nixos/**`, or `workflow_dispatch` | Uses Azure VM Run Command to nudge each affected VM (per-host path filtering). The VM pulls its own config from this repo using an ephemeral `GITHUB_TOKEN` and runs `nixos-rebuild switch`. No SSH private key required. |
-| `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly schedule (Monday 08:00 UTC), or `workflow_dispatch` | Runs `nix flake update` and opens a PR with the refreshed `nixos/flake.lock`. Requires `GH_PAT` secret so the PR triggers `ci-pr.yml`. |
+| `deploy-infra` | `.github/workflows/deploy-infra.yml` | Push to `main` on `infra/**`, or `workflow_dispatch` | Stages the NixOS gallery image, deploys Bicep infrastructure, and **bootstraps Comin** on newly created VMs. After bootstrap, VMs pull config changes automatically. |
+| `comin-status` | `.github/workflows/comin-status.yml` | Daily, manual, or after `deploy-infra` | Health check — queries Comin service status on all VMs via `az vm run-command invoke`. Provides fleet visibility in the Actions tab. |
+| `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly schedule (Monday 08:00 UTC), or `workflow_dispatch` | Runs `nix flake update` and opens a PR with the refreshed `nixos/flake.lock`. Requires `GH_PAT` secret so the PR triggers `ci-pr.yml`. After merge, Comin picks up the updated lock automatically. |
+| `rotate-secrets-reminder` | `.github/workflows/rotate-secrets-reminder.yml` | Monthly (1st of month), or `workflow_dispatch` | Creates a GitHub issue with a checklist for reviewing and rotating secrets (GitHub PAT, Tailscale auth key, etc.). |
 
-**Key principle:** `ci-pr` acts as the gate — it runs on every PR and must pass before merging. The deploy workflows only fire after a merge to `main`, and only for the paths that actually changed. A PR touching only `nixos/` will not trigger Bicep what-if, and a push affecting only `infra/` will not trigger a NixOS deploy.
+**Key principle:** `ci-pr` acts as the gate — it runs on every PR and must pass before merging. After merge to `main`, Comin (running on each VM) polls this repo every 60 seconds and applies the new config automatically. The `deploy-infra` workflow only needs to bootstrap Comin on the first deploy — all subsequent changes are pulled by the VMs themselves.
 
 ## Branch Protection
 
@@ -90,17 +91,19 @@ Branch protection on `main` is strongly recommended to ensure all changes pass v
 
 ## NixOS Configuration
 
-> **GitOps-only:** All NixOS configuration — including `flake.lock` — is driven
-> exclusively through this Git repository. Never run `nix flake update` or
-> `nixos-rebuild` manually on a VM; only GitHub Actions (via
-> [`deploy-nixos`](.github/workflows/deploy-nixos.yml)) should invoke
-> `nixos-rebuild` on VMs. The automated
-> [`update-flake-lock`](.github/workflows/update-flake-lock.yml) workflow runs
-> weekly (Monday 08:00 UTC) and on `workflow_dispatch`, generates a PR with the
-> refreshed lock file, and after merge `deploy-nixos` pushes the new config to
-> every VM. This applies to **gw1** and all future VMs.
+> **GitOps via Comin:** All NixOS configuration is driven through this Git
+> repository using [Comin](https://github.com/nlewo/comin), a GitOps pull-based
+> deployment tool. Comin runs as a systemd service on each VM, polling this repo
+> every 60 seconds and running `nixos-rebuild switch` when it detects changes.
+> Never run `nix flake update` or `nixos-rebuild` manually on a VM.
+>
+> Secrets are encrypted with [agenix](https://github.com/ryantm/agenix) and
+> stored in git. VMs decrypt them using their SSH host keys.
+>
+> See [`docs/comin-deployment.md`](docs/comin-deployment.md) for the full
+> architecture, secret rotation workflow, and status reporting details.
 
-NixOS host configurations live under `nixos/` using a **per-VM subfolder pattern** so that adding a new VM is as simple as adding a new folder under `hosts/`. If you see `nixos-config/` elsewhere in this README, treat it as a historical reference; the canonical path and structure is `nixos/` as shown below:
+NixOS host configurations live under `nixos/` using a **per-VM subfolder pattern** so that adding a new VM is as simple as adding a new folder under `hosts/`:
 
 ```
 nixos/
@@ -110,16 +113,20 @@ nixos/
 │   └── gw1/
 │       ├── default.nix     # Host-specific config (hostname, networking, firewall)
 │       └── hardware.nix    # Azure Gen2 hardware config (NVMe+SCSI, boot loader, Hyper-V)
-└── modules/
-    ├── base.nix            # Common: users, SSH authorized keys, Nix settings
-    ├── tailscale.nix       # Tailscale VPN module
-    ├── networking.nix      # IP forwarding, routing (NVA role)
-    └── monitoring.nix      # node_exporter for Azure Monitor
+├── modules/
+│   ├── base.nix            # Common: users, SSH authorized keys, Nix settings
+│   ├── comin.nix           # Comin GitOps service + status reporting callback
+│   ├── agenix.nix          # Agenix secret declarations
+│   ├── tailscale.nix       # Tailscale VPN module
+│   ├── networking.nix      # IP forwarding, routing (NVA role)
+│   └── monitoring.nix      # node_exporter for Azure Monitor
+└── secrets/
+    ├── secrets.nix         # Age public keys (recipients list)
+    ├── comin-github-token.age   # Encrypted GitHub PAT
+    └── tailscale-authkey.age    # Encrypted Tailscale auth key
 ```
 
-Each host under `hosts/<vmname>/` is self-contained — `default.nix` imports the shared modules and adds host-specific overrides. Search for `# TODO` comments in the NixOS files for values you need to fill in (IP addresses, SSH keys, Tailscale auth key, etc.).
-
-The flake uses standard `nixosConfigurations` outputs consumed by `nixos-rebuild switch --flake .#<hostname>`. GitHub Actions nudges each VM via `az vm run-command invoke` — passing an ephemeral `GITHUB_TOKEN` so the VM can pull its config from this private repo — with no SSH private key required.
+Each host under `hosts/<vmname>/` is self-contained — `default.nix` imports the shared modules and adds host-specific overrides. Search for `# TODO` comments in the NixOS files for values you need to fill in (IP addresses, SSH keys, age keys, etc.).
 
 ## Getting Started
 
