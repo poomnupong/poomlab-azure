@@ -371,6 +371,10 @@ jobs:
             --force-deletion yes \
             --yes
 
+          # Signal to downstream steps (agenix, bootstrap) that the VM was
+          # recreated and has a new SSH host key — secrets must be re-provisioned.
+          echo "VM_RECREATED=true" >> "$GITHUB_ENV"
+
           # Delete the old OS disk synchronously so Bicep can recreate it
           OS_DISK="osdisk-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
           echo "Deleting old OS disk $OS_DISK..."
@@ -428,18 +432,19 @@ jobs:
           # tools, querying the VM, extracting SSH keys). This avoids
           # ~60s+ of unnecessary work on every re-run against an already-
           # provisioned VM. We verify:
-          #   1. secrets.nix exists and contains an age1… public key
-          #   2. Both .age files have valid age ciphertext headers
-          #   3. No .age file contains placeholder text
+          #   1. The VM was NOT recreated earlier in this run (new host key
+          #      means secrets.nix has the wrong recipient)
+          #   2. secrets.nix exists and contains an age1… public key
+          #   3. Both .age files have valid age ciphertext headers
           SECRETS_NIX="nixos/secrets/secrets.nix"
           COMIN_AGE="nixos/secrets/comin-github-token.age"
           TAILSCALE_AGE="nixos/secrets/tailscale-authkey.age"
 
-          if grep -qE '^  gw1 = "age1[a-z0-9]+";' "$SECRETS_NIX" 2>/dev/null \
+          if [ "${VM_RECREATED:-}" = "true" ]; then
+            echo "VM was recreated (new host key) — must re-provision secrets."
+          elif grep -qE '^  gw1 = "age1[a-z0-9]+";' "$SECRETS_NIX" 2>/dev/null \
              && head -1 "$COMIN_AGE" 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
-             && ! grep -qi "placeholder\|replace" "$COMIN_AGE" 2>/dev/null \
-             && head -1 "$TAILSCALE_AGE" 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
-             && ! grep -qi "placeholder\|replace" "$TAILSCALE_AGE" 2>/dev/null; then
+             && head -1 "$TAILSCALE_AGE" 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----"; then
             echo "Age keys and encrypted secrets are already provisioned. Skipping."
             exit 0
           fi
