@@ -719,7 +719,7 @@ jobs:
               --query "instanceView.extensions[?name=='RunCommandLinux'].statuses[0].code" \
               --output tsv 2>/dev/null || echo "unknown")
             if echo "$RC_STATUS" | grep -qi "succeeded\|failed\|unknown"; then
-              echo "RunCommand extension idle (status: $RC_STATUS) after $((rc_wait * 30 - 30))s wait."
+              echo "RunCommand extension idle (status: $RC_STATUS) after $(( (rc_wait - 1) * 30 ))s wait."
               RC_WAIT_OK=true
               break
             fi
