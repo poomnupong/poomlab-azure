@@ -461,11 +461,11 @@ jobs:
             echo "secrets.nix does not contain VM age key — will update."
             NEEDS_UPDATE=true
           elif ! head -1 nixos/secrets/comin-github-token.age 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
-               || grep -qi "placeholder\|replace\|BOOTSTRAP" nixos/secrets/comin-github-token.age 2>/dev/null; then
+               || grep -qi "placeholder\|replace" nixos/secrets/comin-github-token.age 2>/dev/null; then
             echo "comin-github-token.age is missing or looks like a placeholder — will re-encrypt."
             NEEDS_UPDATE=true
           elif ! head -1 nixos/secrets/tailscale-authkey.age 2>/dev/null | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----" \
-               || grep -qi "placeholder\|replace\|BOOTSTRAP" nixos/secrets/tailscale-authkey.age 2>/dev/null; then
+               || grep -qi "placeholder\|replace" nixos/secrets/tailscale-authkey.age 2>/dev/null; then
             echo "tailscale-authkey.age is missing or looks like a placeholder — will re-encrypt."
             NEEDS_UPDATE=true
           fi
