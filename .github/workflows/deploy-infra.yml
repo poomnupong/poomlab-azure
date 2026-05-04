@@ -447,18 +447,18 @@ jobs:
             --timeout 300
 
           echo "VM agent is ready. Extracting SSH host key..."
-          OUTPUT=$(az vm run-command invoke \
-            --resource-group "$RG" \
-            --name "$VM_NAME" \
-            --command-id RunShellScript \
-            --scripts 'source /etc/profile && cat /etc/ssh/ssh_host_ed25519_key.pub' \
-            --output json)
-          echo "run-command stdout: $(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message' 2>/dev/null)"
-          echo "run-command stderr: $(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdErr")) | .message' 2>/dev/null)"
-          VM_SSH_PUBKEY=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message' | head -1 | xargs)
+          # Capture remote stdout via the shared helper (see
+          # .github/scripts/az-run-command.sh for why direct jq parsing
+          # of `az vm run-command invoke` output is fragile).
+          SSH_KEY_FILE=$(mktemp)
+          .github/scripts/az-run-command.sh "$RG" "$VM_NAME" \
+            'source /etc/profile && cat /etc/ssh/ssh_host_ed25519_key.pub' \
+            > "$SSH_KEY_FILE"
+          VM_SSH_PUBKEY=$(head -n 1 "$SSH_KEY_FILE" | xargs)
+          rm -f "$SSH_KEY_FILE"
 
           if [ -z "$VM_SSH_PUBKEY" ] || ! echo "$VM_SSH_PUBKEY" | grep -q "ssh-ed25519"; then
-            echo "::error::Failed to extract VM SSH ed25519 public key after agent became ready"
+            echo "::error::Failed to extract VM SSH ed25519 public key after agent became ready (see diagnostics above)"
             exit 1
           fi
 
@@ -575,33 +575,19 @@ jobs:
 
           # Bootstrap: write PAT to token file, then nixos-rebuild to install Comin.
           # After this, Comin is self-sustaining and pulls config changes automatically.
-          # az vm run-command invoke always exits 0 — must parse JSON for failures.
-          OUTPUT=$(az vm run-command invoke \
-            --resource-group "$RG" \
-            --name "$VM_NAME" \
-            --command-id RunShellScript \
-            --scripts $'set -euo pipefail\nsource /etc/profile\n\n# Write PAT for Comin (temporary bootstrap — agenix takes over after first rebuild)\nmkdir -p /run/agenix\nprintf "%s" "${GITHUB_PAT}" > /run/agenix/comin-github-token\nchmod 0400 /run/agenix/comin-github-token\n\n# First nixos-rebuild installs Comin + agenix. After this, Comin is self-sustaining.\nexport NIX_CONFIG="access-tokens = github.com=${GITHUB_PAT}"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "BOOTSTRAP_SUCCESS"' \
+          # az vm run-command invoke always exits 0 — must parse JSON for failures
+          # (handled by the shared helper).
+          BOOTSTRAP_OUT=$(mktemp)
+          .github/scripts/az-run-command.sh "$RG" "$VM_NAME" \
+            $'set -euo pipefail\nsource /etc/profile\n\n# Write PAT for Comin (temporary bootstrap — agenix takes over after first rebuild)\nmkdir -p /run/agenix\nprintf "%s" "${GITHUB_PAT}" > /run/agenix/comin-github-token\nchmod 0400 /run/agenix/comin-github-token\n\n# First nixos-rebuild installs Comin + agenix. After this, Comin is self-sustaining.\nexport NIX_CONFIG="access-tokens = github.com=${GITHUB_PAT}"\nnixos-rebuild switch --flake "github:${{ github.repository }}?dir=nixos#gw1" --show-trace 2>&1\necho "BOOTSTRAP_SUCCESS"' \
             --parameters "GITHUB_PAT=$GH_PAT" \
-            --output json)
+            | tee "$BOOTSTRAP_OUT"
 
-          STDOUT=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdOut")) | .message // empty')
-          STDERR=$(echo "$OUTPUT" | jq -r '.value[] | select(.code | test("StdErr")) | .message // empty')
-          echo "--- stdout ---"
-          echo "$STDOUT"
-          if [ -n "$STDERR" ]; then
-            echo "--- stderr ---"
-            echo "$STDERR"
-          fi
-
-          FAILED=$(echo "$OUTPUT" | jq -r '[.value[] | select(.code | test("/failed"))] | length')
-          if [ "$FAILED" -gt 0 ]; then
-            echo "::error::Comin bootstrap failed (Run Command reported a failed status)."
-            exit 1
-          fi
-
-          if ! echo "$STDOUT" | grep -q "BOOTSTRAP_SUCCESS"; then
+          if ! grep -q "BOOTSTRAP_SUCCESS" "$BOOTSTRAP_OUT"; then
+            rm -f "$BOOTSTRAP_OUT"
             echo "::error::nixos-rebuild did not emit the success sentinel — bootstrap likely failed."
             exit 1
           fi
+          rm -f "$BOOTSTRAP_OUT"
 
           echo "✅ Comin bootstrap complete. Future config changes will be pulled automatically."
