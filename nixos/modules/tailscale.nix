@@ -38,8 +38,16 @@
         exit 0
       fi
 
+      # Skip if the file contains a placeholder (deploy-infra populates a
+      # placeholder until a real Tailscale auth key is set via agenix -e)
+      AUTH_KEY=$(cat "$AUTH_KEY_FILE")
+      if [ -z "$AUTH_KEY" ] || echo "$AUTH_KEY" | grep -qi "PLACEHOLDER"; then
+        echo "Tailscale auth key is a placeholder, skipping. Set a real key via agenix -e."
+        exit 0
+      fi
+
       ${pkgs-unstable.tailscale}/bin/tailscale up \
-        --authkey "$(cat "$AUTH_KEY_FILE")" \
+        --authkey "$AUTH_KEY" \
         --accept-routes \
         --advertise-exit-node=false
     '';

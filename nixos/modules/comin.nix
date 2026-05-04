@@ -51,13 +51,17 @@ let
       DESCRIPTION="NixOS deployment failed on $HOSTNAME"
     fi
 
-    ${pkgs.curl}/bin/curl -sS \
+    ${pkgs.curl}/bin/curl -sS --fail-with-body \
       -X POST \
       -H "Authorization: token $TOKEN" \
       -H "Accept: application/vnd.github+json" \
       "https://api.github.com/repos/$REPO/statuses/$SHA" \
-      -d "{\"state\":\"$GH_STATE\",\"context\":\"comin/$HOSTNAME\",\"description\":\"$DESCRIPTION\"}" \
-      2>&1 || echo "comin-report-status: failed to post commit status"
+      -d "$(${pkgs.jq}/bin/jq -n \
+        --arg state "$GH_STATE" \
+        --arg context "comin/$HOSTNAME" \
+        --arg description "$DESCRIPTION" \
+        '{state: $state, context: $context, description: $description}')" \
+      2>&1 || echo "comin-report-status: failed to post commit status (HTTP error)"
 
     # ── On failure, also create a GitHub issue ─────────────────────────
     if [ "$GH_STATE" = "failure" ]; then
@@ -82,7 +86,7 @@ let
     EOF
       )
 
-      ${pkgs.curl}/bin/curl -sS \
+      ${pkgs.curl}/bin/curl -sS --fail-with-body \
         -X POST \
         -H "Authorization: token $TOKEN" \
         -H "Accept: application/vnd.github+json" \
@@ -91,7 +95,7 @@ let
           --arg title "🔴 Comin deploy failed on $HOSTNAME — $SHORT_SHA" \
           --arg body "$ISSUE_BODY" \
           '{title: $title, body: $body, labels: ["deploy-failure", "automated"]}')" \
-        2>&1 || echo "comin-report-status: failed to create issue"
+        2>&1 || echo "comin-report-status: failed to create issue (HTTP error)"
     fi
   '';
 in
