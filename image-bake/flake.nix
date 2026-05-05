@@ -74,9 +74,12 @@
         ../nixos/modules/networking.nix
 
         # Common settings (shared between bake and test)
-        {
-          # stateVersion must match the nixpkgs channel (nixos-25.11)
-          system.stateVersion = "25.11";
+        { lib, ... }: {
+          # stateVersion is a compat marker, not a channel version.
+          # Use mkDefault so `core_pulse.nix`'s "24.11" wins for the bake while
+          # this default applies to the smoke test (which does not import
+          # core_pulse.nix).
+          system.stateVersion = lib.mkDefault "25.11";
 
           # pkgs-unstable is expected by base.nix (for tailscale).
           # In the bake context we pin to stable - version is not critical here;
@@ -102,7 +105,7 @@
         {
           # waagent must be enabled in the baked image so it survives
           # nixos-rebuild switch after Comin applies config (D5 Tier 1 gate)
-          virtualisation.azure.agent.enable = true;
+          services.waagent.enable = true;
         }
       ];
 

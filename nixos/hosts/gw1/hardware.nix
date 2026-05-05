@@ -60,7 +60,7 @@
   # waagent enabled.  We must re-declare it here so that after
   # nixos-rebuild switch the agent stays enabled — otherwise Azure
   # loses VM-agent heartbeat and extensions like Run Command break.
-  virtualisation.azure.agent.enable = true;
+  services.waagent.enable = true;
 
   # ── Azure-specific networking ────────────────────────────────────────
   # Hyper-V network interface drivers
