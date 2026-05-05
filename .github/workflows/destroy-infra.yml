@@ -1,7 +1,8 @@
 # Destroy Azure Infrastructure
 #
-# Deletes all resource groups created by deploy-infra.  Use this when you
-# need a clean slate — run deploy-infra afterwards to recreate everything.
+# Deletes all resource groups created by landing-zone and deploy-workload.
+# Use this when you need a clean slate — run landing-zone and deploy-workload
+# afterwards to recreate everything.
 #
 # Manual-dispatch only; requires the "production" environment approval.
 
@@ -22,7 +23,7 @@ env:
   DEPLOYMENT_LOCATION: southcentralus
   PROJECT_NAME: plaz
 
-# Static concurrency group shared with deploy-infra — all deploy/destroy
+# Static concurrency group shared with deploy-workload — all deploy/destroy
 # operations target the same hardcoded subscription resources regardless of
 # branch, so serialization must be branch-independent.
 concurrency:
@@ -82,9 +83,9 @@ jobs:
 
           if [ "$FAILED" -ne 0 ]; then
             echo ""
-            echo "::error::One or more resource groups failed to delete within the timeout. Do NOT run deploy-infra until deletion completes."
+            echo "::error::One or more resource groups failed to delete within the timeout. Do NOT run deploy-workload until deletion completes."
             exit 1
           fi
 
           echo ""
-          echo "✅ All resource groups deleted. Run deploy-infra to recreate."
+          echo "✅ All resource groups deleted. Run landing-zone then deploy-workload to recreate."

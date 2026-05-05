@@ -1,22 +1,21 @@
 # Comin Fleet Health Check
 #
-# Checks the deployment status of Comin-managed VMs. This workflow replaces
-# the old deploy-nixos.yml push-based deployment model.
+# Checks the deployment status of Comin-managed VMs.
 #
 # With Comin, VMs pull their own config changes automatically. This workflow
 # provides visibility into fleet health via the Actions tab:
 #   - Manual dispatch: check status on demand
 #   - Daily schedule: automated health monitoring
-#   - After deploy-infra: verify bootstrap succeeded
+#   - After deploy-workload: verify VM came up correctly
 #
-# Required secrets (same OIDC set as deploy-infra — no new secrets needed):
+# Required secrets (same OIDC set as other Azure workflows):
 #   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
 
 name: comin-status
 
 on:
   workflow_run:
-    workflows: ["deploy-infra"]
+    workflows: ["deploy-workload"]
     types: [completed]
   workflow_dispatch:
   schedule:
@@ -95,7 +94,7 @@ jobs:
 
           if [ $VM_VIEW_EXIT -ne 0 ]; then
             if echo "$VM_VIEW_OUTPUT" | grep -qi "could not be found\|ResourceNotFound\|ResourceGroupNotFound"; then
-              echo "::warning::VM or resource group does not exist yet. Run deploy-infra first."
+              echo "::warning::VM or resource group does not exist yet. Run deploy-workload first."
               echo "vm_ready=false" >> "$GITHUB_OUTPUT"
               exit 0
             else
@@ -137,7 +136,7 @@ jobs:
 
           # Check if comin is active
           if echo "$STDOUT" | grep -q "comin service is NOT active"; then
-            echo "::warning::Comin service is not active on gw1. Run deploy-infra to bootstrap."
+            echo "::warning::Comin service is not active on gw1. Check deploy-workload logs."
           else
             echo "✅ Comin is active and healthy on gw1."
           fi

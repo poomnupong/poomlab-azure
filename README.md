@@ -185,7 +185,8 @@ gh secret set AZURE_TENANT_ID --body "<value from bootstrap output>"
 gh secret set AZURE_SUBSCRIPTION_ID --body "<value from bootstrap output>"
 gh secret set ADMIN_SSH_PUBLIC_KEY --body "$(cat ~/.ssh/id_ed25519.pub)"
 gh secret set GH_PAT --body "<your fine-grained PAT>"
-gh secret set CI_SP_OBJECT_ID --body "$(az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv)"
+CI_SP_OID=$(az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv)
+gh secret set CI_SP_OBJECT_ID --body "$CI_SP_OID"
 ```
 
 > **Note:** The workflow also requires a GitHub **environment** named `production` for the deploy job. Create it under **Settings → Environments → New environment** and name it `production`. You can optionally add protection rules (e.g., required reviewers) to gate deployments.

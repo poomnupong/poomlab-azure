@@ -1,7 +1,7 @@
 // gallery/main.bicep — Azure Compute Gallery and NixOS image definition
 //
 // Creates a Shared Image Gallery (Azure Compute Gallery) and a NixOS image
-// definition.  Image *versions* are staged imperatively by the deploy-infra
+// definition.  Image *versions* are staged imperatively by the image-bake
 // workflow (VHD download → managed-disk upload → gallery image version).
 
 @description('Azure region')

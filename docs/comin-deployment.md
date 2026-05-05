@@ -115,10 +115,11 @@ To rotate secrets, edit locally with `agenix -e`:
 # Add your own age key to secrets.nix if not already present
 cat ~/.ssh/id_ed25519.pub | ssh-to-age
 # Add the resulting age1... key to nixos/secrets/secrets.nix
+cd nixos
 # Re-encrypt all secrets for the updated recipient list
-cd nixos && agenix -r
+agenix -r
 # Edit a specific secret
-cd nixos && agenix -e secrets/comin-github-token.age
+agenix -e secrets/comin-github-token.age
 git add secrets/ && git commit -m "chore: rotate secret" && git push
 ```
 
