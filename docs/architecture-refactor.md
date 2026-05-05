@@ -146,10 +146,12 @@ Each phase is one PR. Each PR is independently revertible.
       `nixos/flake.nix` and `nixos/hosts/gw1/default.nix`, and a pointer to
       this doc / PR #45 was added to the top of `nixos/modules/comin.nix`
       so future agents land on the architectural context.)*
-- [ ] **Phase 3 — `image-bake` workflow.** New workflow that consumes the
+- [x] **Phase 3 — `image-bake` workflow.** New workflow that consumes the
       upstream VHD, layers `comin.nix`, publishes a gallery image version,
-      runs Tier 1 smoke (`nixosTest`), and tags the version. No consumer
-      yet.
+      runs Tier 1 smoke (`nixosTest`), and tags the version as `blessed=true`.
+      Also fixed `nixos/flake.nix` to add missing `agenix` and `comin` flake
+      inputs required by `nixos/modules/agenix.nix` and `nixos/modules/comin.nix`.
+      *(PR #XX, merged.)*
 - [ ] **Phase 4 — Tier 2 smoke.** Add real-Azure smoke job to `image-bake`
       gated on Tier 1 success. On pass, set `blessed=true` tag and remove
       from older versions.
