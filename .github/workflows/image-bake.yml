@@ -149,18 +149,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Deploy Gallery Infrastructure
-        # Idempotent. Mirrors deploy-infra so a fresh environment (or a
-        # gallery RG that has been torn down) gets the gallery, image
-        # definition, and supporting RBAC re-created before publish.
+      - name: Verify Gallery exists
+        # The gallery is managed by landing-zone.yml. If the gallery RG or
+        # image definition does not exist, the user must run landing-zone first.
         run: |
           set -euxo pipefail
-          az deployment sub create \
-            --location "${{ env.DEPLOYMENT_LOCATION }}" \
-            --template-file infra/gallery.bicep \
-            --parameters location="${{ env.DEPLOYMENT_LOCATION }}" \
-                         projectName="${{ env.PROJECT_NAME }}" \
-            --name "gallery-${{ env.PROJECT_NAME }}"
+          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
+          GALLERY_NAME="gal${{ env.PROJECT_NAME }}"
+          IMAGE_DEF="nixos-azure-base"
+          az sig image-definition show \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            -o none \
+          || { echo "::error::Gallery image definition not found. Run the landing-zone workflow first."; exit 1; }
 
       - name: Download VHD artifact
         uses: actions/download-artifact@v4
@@ -184,10 +186,10 @@ jobs:
 
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
           GALLERY_NAME=$(az deployment sub show \
-            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.galleryName.value' -o tsv)
           IMAGE_DEF=$(az deployment sub show \
-            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.imageDefinitionName.value' -o tsv)
 
           # Idempotent: skip if version already exists
@@ -364,10 +366,10 @@ jobs:
 
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
           GALLERY_NAME=$(az deployment sub show \
-            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.galleryName.value' -o tsv)
           IMAGE_DEF=$(az deployment sub show \
-            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.imageDefinitionName.value' -o tsv)
 
           IMAGE_ID=$(az sig image-version show \
@@ -491,10 +493,10 @@ jobs:
 
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
           GALLERY_NAME=$(az deployment sub show \
-            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.galleryName.value' -o tsv)
           IMAGE_DEF=$(az deployment sub show \
-            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.imageDefinitionName.value' -o tsv)
 
           IMAGE_VERSION_ID=$(az sig image-version show \
