@@ -77,6 +77,23 @@
         # Inline lambda modules must be parenthesized when placed in a list:
         # without parens the Nix parser tries to read `{ lib, ... }` as an
         # attribute-set literal and fails on the `,`.
+        #
+        # ── Why this block also carries explicit overrides ──────────────
+        # The bake stacks TWO opinionated NixOS baselines at the same
+        # module priority:
+        #   1. `core_pulse.nix` from nixos-azimage-builder (Azure hardware
+        #      + opinions: passwordless sudo, stateVersion "24.11",
+        #      azureuser, openssh, …)
+        #   2. `nixos/modules/base.nix` from poomlab-azure (timezone,
+        #      azureuser, openssh, sudo *with* password, …)
+        # Where they set the SAME option to DIFFERENT regular-priority
+        # values, Nix raises "conflicting definition values". Audit when
+        # bumping either baseline; reconcile here, not by editing
+        # base.nix (it is also consumed by the runtime flake on hosts).
+        # Currently reconciled options:
+        #   - networking.hostName     (see below)
+        #   - system.stateVersion     (see below)
+        #   - security.sudo.wheelNeedsPassword (see below)
         ({ lib, ... }: {
           # stateVersion is a compat marker, not a channel version.
           # Use mkDefault so `core_pulse.nix`'s "24.11" wins for the bake while
@@ -102,6 +119,17 @@
           # cleanly overrides azure-common's default while still satisfying
           # Comin's "explicitly set" assertion.
           networking.hostName = "plaz-image";
+
+          # `core_pulse.nix` sets `security.sudo.wheelNeedsPassword = false;`
+          # at regular priority (passwordless sudo for the image's default
+          # user). `nixos/modules/base.nix` sets it to `true` at regular
+          # priority (poomlab-azure's canonical post-deploy posture). Use
+          # mkForce to match base.nix so the baked image behaves the same
+          # as the steady-state Comin rebuild — minimizing drift between
+          # first-boot and post-rebuild. (Cloud-init's default_user
+          # NOPASSWD sudoers entry still grants azureuser passwordless
+          # sudo at provisioning time, independent of this option.)
+          security.sudo.wheelNeedsPassword = lib.mkForce true;
 
           # pkgs-unstable is expected by base.nix (for tailscale).
           # In the bake context we pin to stable - version is not critical here;
