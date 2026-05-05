@@ -91,10 +91,17 @@
           #
           # Host-specific modules (which set `networking.hostName = "gw1"` etc.)
           # are intentionally NOT imported here — they are layered on by Comin
-          # at deploy time via the runtime nixos/flake.nix. Provide a low-
-          # priority default so the bake/smoke-test eval succeeds; the host
-          # module's regular-priority assignment overrides this at deploy time.
-          networking.hostName = lib.mkDefault "plaz-image";
+          # at deploy time via the runtime nixos/flake.nix, which is a separate
+          # flake from this one, so there is no priority conflict at deploy time.
+          #
+          # Use a regular-priority assignment (NOT lib.mkDefault) here: the
+          # `azure` format from nixos-generators pulls in
+          # `nixos/modules/virtualisation/azure-common.nix`, which itself
+          # declares `networking.hostName = lib.mkDefault "";`. Two mkDefault
+          # values at the same priority would conflict; a regular assignment
+          # cleanly overrides azure-common's default while still satisfying
+          # Comin's "explicitly set" assertion.
+          networking.hostName = "plaz-image";
 
           # pkgs-unstable is expected by base.nix (for tailscale).
           # In the bake context we pin to stable - version is not critical here;
