@@ -351,8 +351,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          SMOKE_RG="rg-${{ env.PROJECT_NAME }}-smoke-${{ env.DEPLOYMENT_LOCATION }}"
+          # Per-run RG name so concurrent / retried runs cannot collide and
+          # async (--no-wait) teardown of one run cannot race a fresh run.
+          SMOKE_RG="rg-${{ env.PROJECT_NAME }}-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
           VM_NAME="vm-smoke-${{ github.run_id }}"
+
+          # Emit names to $GITHUB_OUTPUT *before* any provisioning so the
+          # always() teardown step can clean up even if a later az command
+          # in this step fails partway through.
+          echo "smoke_rg=$SMOKE_RG"  >> "$GITHUB_OUTPUT"
+          echo "vm_name=$VM_NAME"    >> "$GITHUB_OUTPUT"
 
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
           GALLERY_NAME=$(az deployment sub show \
@@ -369,7 +377,7 @@ jobs:
             --gallery-image-version "$GALLERY_VERSION" \
             --query id -o tsv)
 
-          # Ensure smoke RG exists (idempotent)
+          # Create the per-run smoke RG (fresh; should not pre-exist).
           az group create --name "$SMOKE_RG" \
             --location "${{ env.DEPLOYMENT_LOCATION }}" --output none
 
@@ -388,8 +396,6 @@ jobs:
             --resource-group "$SMOKE_RG" --name "$VM_NAME" \
             --query publicIps -o tsv)
 
-          echo "smoke_rg=$SMOKE_RG"  >> "$GITHUB_OUTPUT"
-          echo "vm_name=$VM_NAME"    >> "$GITHUB_OUTPUT"
           echo "vm_ip=$VM_IP"        >> "$GITHUB_OUTPUT"
 
       - name: Wait for waagent ready
@@ -400,13 +406,19 @@ jobs:
           set -euo pipefail
           display="unknown"
           for i in $(seq 1 30); do
+            # Default to '{}' so jq always parses valid JSON even if az fails
+            # transiently or the vmAgent block isn't populated yet. Use ?//
+            # accessors so missing fields don't error out under set -e.
             agent_status=$(az vm get-instance-view \
               --resource-group "$SMOKE_RG" --name "$VM_NAME" \
-              --query 'instanceView.vmAgent' -o json 2>/dev/null || true)
-            display=$(echo "$agent_status"   | jq -r '.statuses[0].displayStatus // "unknown"')
-            message=$(echo "$agent_status"   | jq -r '.statuses[0].message // "unknown"')
-            version=$(echo "$agent_status"   | jq -r '.vmAgentVersion // "unknown"')
-            heartbeat=$(echo "$agent_status" | jq -r '.statuses[0].time // "unknown"')
+              --query 'instanceView.vmAgent' -o json 2>/dev/null || echo '{}')
+            if [ -z "$agent_status" ] || [ "$agent_status" = "null" ]; then
+              agent_status='{}'
+            fi
+            display=$(echo "$agent_status"   | jq -r '(.statuses[0].displayStatus // "unknown")')
+            message=$(echo "$agent_status"   | jq -r '(.statuses[0].message       // "unknown")')
+            version=$(echo "$agent_status"   | jq -r '(.vmAgentVersion            // "unknown")')
+            heartbeat=$(echo "$agent_status" | jq -r '(.statuses[0].time          // "unknown")')
             echo "attempt $i: status=$display version=$version message=$message heartbeat=$heartbeat"
             [ "$display" = "Ready" ] && { echo "waagent is ready"; break; }
             sleep 10
