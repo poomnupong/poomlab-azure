@@ -135,6 +135,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: production
+    outputs:
+      gallery_version: ${{ steps.stage.outputs.gallery_version }}
 
     steps:
       - name: Azure Login (OIDC)
@@ -166,6 +168,7 @@ jobs:
           name: plaz-vhd-${{ needs.build.outputs.version }}
 
       - name: Stage VHD and publish gallery image version
+        id: stage
         env:
           VERSION_RAW: ${{ needs.build.outputs.version }}
         run: |
@@ -198,6 +201,7 @@ jobs:
             echo "Gallery image version $GALLERY_VERSION already exists - skipping upload"
             echo "IMAGE_VERSION_ID=$EXISTING" >> "$GITHUB_ENV"
             echo "GALLERY_VERSION=$GALLERY_VERSION" >> "$GITHUB_ENV"
+            echo "gallery_version=$GALLERY_VERSION" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -269,6 +273,7 @@ jobs:
 
           echo "IMAGE_VERSION_ID=$IMAGE_VERSION_ID" >> "$GITHUB_ENV"
           echo "GALLERY_VERSION=$GALLERY_VERSION"   >> "$GITHUB_ENV"
+          echo "gallery_version=$GALLERY_VERSION"   >> "$GITHUB_OUTPUT"
 
           az disk delete --resource-group "$GALLERY_RG" --name "$DISK_NAME" --yes --no-wait
 
@@ -298,7 +303,228 @@ jobs:
             echo "|-------|-------|"
             echo "| Gallery version | \`${GALLERY_VERSION:-n/a}\` |"
             echo "| Tier 1 | \`passed\` |"
-            echo "| Blessed | \`false\` (Tier 2 not yet implemented — Phase 4) |"
+            echo "| Blessed | \`false\` (set by smoke-tier2 after Tier 2 passes) |"
             echo "| Trigger | \`${{ github.event_name }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -----------------------------------------------------------------------
+  # Job 3: smoke-tier2 - Tier 2 real-Azure smoke test
+  # Runs only on main branch after publish succeeds.
+  # Provisions a throwaway VM, asserts Comin is active, tears down, then
+  # sets blessed=true on the gallery image version.
+  # -----------------------------------------------------------------------
+  smoke-tier2:
+    name: Tier 2 Real-Azure Smoke
+    needs: publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Generate ephemeral SSH keypair
+        id: ssh
+        run: |
+          set -euo pipefail
+          d=$(mktemp -d)
+          chmod 700 "$d"
+          ssh-keygen -t ed25519 -N '' -C 'image-bake-smoke' -f "$d/id" >/dev/null
+          chmod 600 "$d/id"
+          echo "dir=$d" >> "$GITHUB_OUTPUT"
+
+      - name: Provision smoke-test VM
+        id: provision
+        env:
+          GALLERY_VERSION: ${{ needs.publish.outputs.gallery_version }}
+          SSH_DIR:         ${{ steps.ssh.outputs.dir }}
+        run: |
+          set -euo pipefail
+
+          # Per-run RG name so concurrent / retried runs cannot collide and
+          # async (--no-wait) teardown of one run cannot race a fresh run.
+          SMOKE_RG="rg-${{ env.PROJECT_NAME }}-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+          VM_NAME="vm-smoke-${{ github.run_id }}"
+
+          # Emit names to $GITHUB_OUTPUT *before* any provisioning so the
+          # always() teardown step can clean up even if a later az command
+          # in this step fails partway through.
+          echo "smoke_rg=$SMOKE_RG"  >> "$GITHUB_OUTPUT"
+          echo "vm_name=$VM_NAME"    >> "$GITHUB_OUTPUT"
+
+          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
+          GALLERY_NAME=$(az deployment sub show \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.galleryName.value' -o tsv)
+          IMAGE_DEF=$(az deployment sub show \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.imageDefinitionName.value' -o tsv)
+
+          IMAGE_ID=$(az sig image-version show \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            --gallery-image-version "$GALLERY_VERSION" \
+            --query id -o tsv)
+
+          # Create the per-run smoke RG (fresh; should not pre-exist).
+          az group create --name "$SMOKE_RG" \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" --output none
+
+          PUBKEY=$(cat "$SSH_DIR/id.pub")
+          az vm create \
+            --resource-group "$SMOKE_RG" \
+            --name "$VM_NAME" \
+            --image "$IMAGE_ID" \
+            --size Standard_D2as_v5 \
+            --admin-username azureuser \
+            --ssh-key-value "$PUBKEY" \
+            --public-ip-sku Standard \
+            --output none
+
+          VM_IP=$(az vm show -d \
+            --resource-group "$SMOKE_RG" --name "$VM_NAME" \
+            --query publicIps -o tsv)
+
+          echo "vm_ip=$VM_IP"        >> "$GITHUB_OUTPUT"
+
+      - name: Wait for waagent ready
+        env:
+          SMOKE_RG: ${{ steps.provision.outputs.smoke_rg }}
+          VM_NAME:  ${{ steps.provision.outputs.vm_name }}
+        run: |
+          set -euo pipefail
+          display="unknown"
+          for i in $(seq 1 30); do
+            # Default to '{}' so jq always parses valid JSON even if az fails
+            # transiently or the vmAgent block isn't populated yet. Use ?//
+            # accessors so missing fields don't error out under set -e.
+            agent_status=$(az vm get-instance-view \
+              --resource-group "$SMOKE_RG" --name "$VM_NAME" \
+              --query 'instanceView.vmAgent' -o json 2>/dev/null || echo '{}')
+            if [ -z "$agent_status" ] || [ "$agent_status" = "null" ]; then
+              agent_status='{}'
+            fi
+            display=$(echo "$agent_status"   | jq -r '(.statuses[0].displayStatus // "unknown")')
+            message=$(echo "$agent_status"   | jq -r '(.statuses[0].message       // "unknown")')
+            version=$(echo "$agent_status"   | jq -r '(.vmAgentVersion            // "unknown")')
+            heartbeat=$(echo "$agent_status" | jq -r '(.statuses[0].time          // "unknown")')
+            echo "attempt $i: status=$display version=$version message=$message heartbeat=$heartbeat"
+            [ "$display" = "Ready" ] && { echo "waagent is ready"; break; }
+            sleep 10
+          done
+          [ "$display" != "Ready" ] && {
+            echo "::error::waagent did not become ready after 30 attempts"
+            exit 1
+          } || true
+
+      - name: Assert Comin is active via run-command
+        env:
+          SMOKE_RG: ${{ steps.provision.outputs.smoke_rg }}
+          VM_NAME:  ${{ steps.provision.outputs.vm_name }}
+        run: |
+          set -euo pipefail
+          OUT=$(az vm run-command invoke \
+            --resource-group "$SMOKE_RG" --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts '
+              set -euo pipefail
+              echo "=== nixos-version ==="
+              nixos-version
+              echo "=== comin status ==="
+              systemctl status comin --no-pager || true
+              echo "=== comin is-active ==="
+              systemctl is-active comin
+              echo "TIER2_OK"
+            ' \
+            --output json)
+          STDOUT=$(echo "$OUT" | jq -r '.value[0].message // ""')
+          echo "$STDOUT"
+          echo "$STDOUT" | grep -q "TIER2_OK" || {
+            echo "::error::TIER2_OK sentinel missing — run-command failed or comin not active"
+            exit 1
+          }
+
+      - name: Assert via SSH (single attempt)
+        env:
+          VM_IP:   ${{ steps.provision.outputs.vm_ip }}
+          SSH_DIR: ${{ steps.ssh.outputs.dir }}
+        run: |
+          set -euo pipefail
+          # StrictHostKeyChecking=accept-new: accept the host key on first connection
+          # only; reject if it changes. This is safe for ephemeral smoke-test VMs
+          # that we provisioned moments ago and will destroy immediately after.
+          ssh -i "$SSH_DIR/id" \
+            -o StrictHostKeyChecking=accept-new \
+            -o BatchMode=yes \
+            -o ConnectTimeout=30 \
+            -o ServerAliveInterval=30 \
+            -o IdentitiesOnly=yes \
+            "azureuser@${VM_IP}" \
+            'nixos-version && systemctl is-active comin && echo SSH_ASSERT_OK'
+
+      - name: Tear down smoke RG
+        if: always()
+        env:
+          SMOKE_RG: ${{ steps.provision.outputs.smoke_rg }}
+        run: |
+          [ -z "${SMOKE_RG:-}" ] && exit 0
+          az group delete --name "$SMOKE_RG" --yes --no-wait \
+            || echo "::warning::Failed to queue deletion of $SMOKE_RG — manual cleanup may be required"
+          echo "Smoke RG $SMOKE_RG deletion queued"
+
+      - name: Tag image version as blessed
+        env:
+          GALLERY_VERSION: ${{ needs.publish.outputs.gallery_version }}
+        run: |
+          set -euo pipefail
+
+          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
+          GALLERY_NAME=$(az deployment sub show \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.galleryName.value' -o tsv)
+          IMAGE_DEF=$(az deployment sub show \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.imageDefinitionName.value' -o tsv)
+
+          IMAGE_VERSION_ID=$(az sig image-version show \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            --gallery-image-version "$GALLERY_VERSION" \
+            --query id -o tsv)
+
+          az tag create \
+            --resource-id "$IMAGE_VERSION_ID" \
+            --tags blessed=true \
+                   tier2=passed \
+                   bake-workflow=image-bake \
+                   bake-run="${{ github.run_id }}" \
+                   bake-sha="${{ github.sha }}"
+          echo "✅ Tagged $GALLERY_VERSION as blessed=true (Tier 1 + Tier 2 passed)"
+
+      - name: Job summary
+        if: always()
+        env:
+          GALLERY_VERSION: ${{ needs.publish.outputs.gallery_version }}
+        run: |
+          {
+            echo "### Tier 2 smoke summary"
+            echo
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Gallery version | \`${GALLERY_VERSION:-n/a}\` |"
+            echo "| Tier 2 | \`${{ job.status }}\` |"
+            echo "| Blessed | \`${{ job.status == 'success' && 'true' || 'false' }}\` |"
             echo "| Commit | \`${{ github.sha }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
