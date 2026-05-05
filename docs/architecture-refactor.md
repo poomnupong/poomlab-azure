@@ -175,7 +175,7 @@ Each phase is one PR. Each PR is independently revertible.
       image changes; implements D2 Option A agenix host-key delivery (CI-generated
       ed25519 key → Key Vault `kv-plaz-scus` → `cloud-init customData` →
       agenix secrets re-encrypted and committed). Bicep `customData` parameter
-      threaded through `main.bicep` → `compute/main.bicep`. *(PR #XX, merged.)*
+      threaded through `main.bicep` → `compute/main.bicep`.
 - [ ] **Phase 6 — `landing-zone` workflow.** Extract gallery RG, network RG,
       Key Vault, monitoring into their own workflow with their own
       cadence/triggers.

@@ -11,8 +11,10 @@ param defaultSubnetPrefix = '192.168.85.16/28'
 param logRetentionDays = 30
 param sshSourceAddressPrefix = '99.7.231.75/32'
 
-// NixOS image version resource ID — provided by the stage-image workflow job.
-// Falls back to empty string for validation-only runs (VM will not be deployed).
+// NixOS image version resource ID — resolved by deploy-workload.yml from the
+// newest gallery image version tagged blessed=true and exported as
+// NIXOS_IMAGE_ID. Falls back to empty string for validation-only runs
+// (VM will not be deployed).
 param nixosImageId = readEnvironmentVariable('NIXOS_IMAGE_ID', '')
 
 // cloud-init customData for agenix host key injection (Option A).

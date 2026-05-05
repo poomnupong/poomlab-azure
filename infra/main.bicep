@@ -42,7 +42,8 @@ param nixosImageId string = ''
 @description('Source address prefix for SSH access (e.g. your public IP in CIDR notation). Leave empty to omit the SSH rule.')
 param sshSourceAddressPrefix string = ''
 
-@description('Base64-encoded cloud-init customData for first-boot host key injection (Option A agenix key delivery). Leave empty for no-op deploys where VM already exists.')
+@description('Base64-encoded cloud-init customData for first-boot host key injection (Option A agenix key delivery). Contains the SSH host private key — must be treated as a secret. Leave empty for no-op deploys where VM already exists.')
+@secure()
 param customData string = ''
 
 @description('Tags applied to all resources')

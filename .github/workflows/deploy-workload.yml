@@ -37,8 +37,12 @@ env:
   PROJECT_NAME: plaz
 
 concurrency:
+  # Do NOT cancel in-progress runs: the deploy job rotates the agenix host
+  # key, writes to Key Vault, and pushes re-encrypted secrets back to the
+  # repo. Cancelling mid-flight would leave the repo / Key Vault / VM in
+  # inconsistent states. Queue new runs instead.
   group: workload-plaz-southcentralus
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -117,32 +121,41 @@ jobs:
           VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
           RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
 
-          VM_SHOW_OUTPUT=""
+          # Capture stdout and stderr separately. Mixing them risks a stray
+          # az-CLI warning on stderr being concatenated to the image-id and
+          # producing a spurious image_changed=true (forcing VM recreation).
+          STDERR_FILE=$(mktemp)
+          VM_IMAGE_ID=""
           VM_SHOW_EXIT=0
-          VM_SHOW_OUTPUT=$(az vm show \
+          VM_IMAGE_ID=$(az vm show \
             --resource-group "$RG" --name "$VM_NAME" \
-            --query 'storageProfile.imageReference.id' -o tsv 2>&1) || VM_SHOW_EXIT=$?
+            --query 'storageProfile.imageReference.id' -o tsv 2>"$STDERR_FILE") || VM_SHOW_EXIT=$?
+          VM_SHOW_STDERR=$(cat "$STDERR_FILE")
+          rm -f "$STDERR_FILE"
+          if [ -n "$VM_SHOW_STDERR" ]; then
+            echo "az vm show stderr: $VM_SHOW_STDERR"
+          fi
 
           if [ $VM_SHOW_EXIT -ne 0 ]; then
-            if echo "$VM_SHOW_OUTPUT" | grep -qi "could not be found\|ResourceNotFound"; then
+            if echo "$VM_SHOW_STDERR" | grep -qi "could not be found\|ResourceNotFound"; then
               echo "vm_exists=false"   >> "$GITHUB_OUTPUT"
               echo "image_changed=true" >> "$GITHUB_OUTPUT"
               echo "VM does not exist — will be created"
               exit 0
             else
-              echo "::error::Unexpected error querying VM: $VM_SHOW_OUTPUT"
+              echo "::error::Unexpected error querying VM: $VM_SHOW_STDERR"
               exit 1
             fi
           fi
 
           echo "vm_exists=true" >> "$GITHUB_OUTPUT"
-          if [ "$VM_SHOW_OUTPUT" = "$NIXOS_IMAGE_ID" ]; then
+          if [ "$VM_IMAGE_ID" = "$NIXOS_IMAGE_ID" ]; then
             echo "image_changed=false" >> "$GITHUB_OUTPUT"
             echo "VM already uses blessed image — no recreation needed"
           else
             echo "image_changed=true" >> "$GITHUB_OUTPUT"
             echo "Image changed — VM will be recreated"
-            echo "  current: $VM_SHOW_OUTPUT"
+            echo "  current: $VM_IMAGE_ID"
             echo "  target:  $NIXOS_IMAGE_ID"
           fi
 
@@ -270,6 +283,9 @@ CLOUDINIT
 )
 
           CUSTOM_DATA_B64=$(printf '%s' "$CLOUD_INIT" | base64 -w 0)
+          # Mask the payload before exporting: it contains the host private
+          # key and must never appear in Actions logs (e.g. via `set -x`).
+          echo "::add-mask::$CUSTOM_DATA_B64"
           echo "CUSTOM_DATA_B64=$CUSTOM_DATA_B64" >> "$GITHUB_ENV"
 
           # Cleanup key material from runner disk
