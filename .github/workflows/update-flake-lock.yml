@@ -67,8 +67,11 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
           extra_nix_config: "experimental-features = nix-command flakes"
 
-      - name: Update flake inputs
+      - name: Update flake inputs (nixos)
         run: cd nixos && nix flake update
+
+      - name: Update flake inputs (image-bake)
+        run: cd image-bake && nix flake update
 
       - name: Open / update pull request
         uses: peter-evans/create-pull-request@v6
@@ -80,9 +83,10 @@ jobs:
             ## Automated nixpkgs input bump
 
             This pull request was opened automatically by the `update-flake-lock`
-            workflow. It contains a refreshed `nixos/flake.lock` that pins all
-            flake inputs (primarily `nixpkgs`, `comin`, `agenix`) to their latest
-            revisions.
+            workflow. It contains a refreshed `nixos/flake.lock` and
+            `image-bake/flake.lock` that pin all flake inputs (primarily
+            `nixpkgs`, `comin`, `agenix`, `nixos-generators`,
+            `nixos-azimage-builder`) to their latest revisions.
 
             ### What to do
 

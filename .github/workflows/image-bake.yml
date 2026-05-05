@@ -1,0 +1,304 @@
+# image-bake.yml - Bake Comin into the NixOS Azure image and publish
+#
+# Phase 3 of the workflow/image architecture refactor.
+# See docs/architecture-refactor.md for design decisions D1-D5.
+#
+# Pattern mirrors nixos-azimage-builder/weekly_forge.yml:
+#   nix-installer -> magic-nix-cache -> nix build -> locate VHD -> gzip -> upload
+# The difference: we layer poomlab-azure modules on top of the upstream
+# hardware baseline before building.
+#
+# Jobs:
+#   build   - nix build + Tier 1 nixosTest smoke (always, no Azure cost)
+#   publish - upload VHD to gallery + tag tier1=passed (main branch only).
+#             blessed=true is intentionally NOT set here - it is reserved
+#             for image versions that also pass Tier 2 (Phase 4).
+
+name: image-bake
+
+on:
+  schedule:
+    # Saturday 14:00 UTC - after nixos-azimage-builder weekly_forge (06:00 UTC)
+    - cron: "0 14 * * 6"
+  push:
+    branches: [main]
+    paths:
+      - 'nixos/modules/**'
+      - 'nixos/flake.nix'
+      - 'nixos/flake.lock'
+      - 'image-bake/**'
+      - '.github/workflows/image-bake.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'nixos/modules/**'
+      - 'nixos/flake.nix'
+      - 'nixos/flake.lock'
+      - 'image-bake/**'
+      - '.github/workflows/image-bake.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC for Azure login (publish job only)
+  contents: read
+
+concurrency:
+  group: image-bake
+  cancel-in-progress: false   # never cancel a running bake
+
+env:
+  DEPLOYMENT_LOCATION: southcentralus
+  PROJECT_NAME: plaz
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Job 1: build - nix build + Tier 1 smoke test
+  # Runs on every trigger. No Azure cost. No Azure credentials needed.
+  # -----------------------------------------------------------------------
+  build:
+    name: Build & Tier 1 Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: Generate image version string
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION="$(date -u +%Y%m%d.%H%M)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Image version: ${VERSION}"
+
+      - name: Build plaz image
+        run: |
+          cd image-bake
+          nix build .#plazImage --print-build-logs
+
+      - name: Locate VHD artifact
+        id: locate
+        run: |
+          set -euo pipefail
+          VHD_PATH=$(find image-bake/result/ -name "*.vhd" | head -n 1)
+          if [ -z "${VHD_PATH}" ]; then
+            echo "::error::No .vhd file found under image-bake/result/"
+            exit 1
+          fi
+          echo "vhd_path=${VHD_PATH}" >> "$GITHUB_OUTPUT"
+          echo "Found VHD: ${VHD_PATH} ($(du -sh "${VHD_PATH}" | cut -f1))"
+
+      - name: Tier 1 smoke test (nixosTest in QEMU)
+        run: |
+          cd image-bake
+          nix build .#checks.x86_64-linux.smokeTest --print-build-logs
+          echo "Tier 1 smoke test passed"
+
+      - name: Compress VHD for upload
+        if: github.ref == 'refs/heads/main'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          VHD_PATH: ${{ steps.locate.outputs.vhd_path }}
+        run: |
+          set -euo pipefail
+          ASSET="plaz-image-${VERSION}.vhd"
+          cp "${VHD_PATH}" "${ASSET}"
+          gzip -9 "${ASSET}"
+          echo "Compressed: ${ASSET}.gz ($(du -sh "${ASSET}.gz" | cut -f1))"
+
+      - name: Upload VHD artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plaz-vhd-${{ steps.version.outputs.version }}
+          path: "*.vhd.gz"
+          retention-days: 3
+
+  # -----------------------------------------------------------------------
+  # Job 2: publish - upload VHD to Compute Gallery, tag tier1=passed
+  # Runs only on main branch. Requires Azure OIDC.
+  # blessed=true is set by Phase 4 (Tier 2 real-Azure smoke), not here.
+  # -----------------------------------------------------------------------
+  publish:
+    name: Publish to Gallery
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy Gallery Infrastructure
+        # Idempotent. Mirrors deploy-infra so a fresh environment (or a
+        # gallery RG that has been torn down) gets the gallery, image
+        # definition, and supporting RBAC re-created before publish.
+        run: |
+          set -euxo pipefail
+          az deployment sub create \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file infra/gallery.bicep \
+            --parameters location="${{ env.DEPLOYMENT_LOCATION }}" \
+                         projectName="${{ env.PROJECT_NAME }}" \
+            --name "gallery-${{ env.PROJECT_NAME }}"
+
+      - name: Download VHD artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: plaz-vhd-${{ needs.build.outputs.version }}
+
+      - name: Stage VHD and publish gallery image version
+        env:
+          VERSION_RAW: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Convert YYYYMMDD.HHMM -> gallery Major.Minor.Patch
+          GALLERY_VERSION="$(echo "$VERSION_RAW" | sed -E 's/^([0-9]{8})\.([0-9]{4})$/\1.\2.0/')"
+          if ! echo "$GALLERY_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Could not convert $VERSION_RAW to gallery version format"
+            exit 1
+          fi
+          echo "Gallery version: $GALLERY_VERSION"
+
+          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
+          GALLERY_NAME=$(az deployment sub show \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.galleryName.value' -o tsv)
+          IMAGE_DEF=$(az deployment sub show \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.imageDefinitionName.value' -o tsv)
+
+          # Idempotent: skip if version already exists
+          EXISTING=$(az sig image-version show \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            --gallery-image-version "$GALLERY_VERSION" \
+            --query id -o tsv 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "Gallery image version $GALLERY_VERSION already exists - skipping upload"
+            echo "IMAGE_VERSION_ID=$EXISTING" >> "$GITHUB_ENV"
+            echo "GALLERY_VERSION=$GALLERY_VERSION" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # Decompress
+          ASSET_GZ=$(find . -name "*.vhd.gz" | head -n 1)
+          VHD="${ASSET_GZ%.gz}"
+          gunzip "$ASSET_GZ"
+          VHD_SIZE=$(stat -c %s "$VHD")
+          echo "VHD size: $VHD_SIZE bytes"
+
+          # Direct-upload managed disk
+          DISK_NAME="plaz-bake-staging-${GALLERY_VERSION//./-}"
+          DISK_ID=$(az disk create \
+            --resource-group "$GALLERY_RG" \
+            --name "$DISK_NAME" \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --upload-type Upload \
+            --upload-size-bytes "$VHD_SIZE" \
+            --hyper-v-generation V2 \
+            --os-type Linux \
+            --query id -o tsv)
+
+          set +x
+          SAS=$(az disk grant-access \
+            --resource-group "$GALLERY_RG" --name "$DISK_NAME" \
+            --access-level Write --duration-in-seconds 3600 \
+            --query accessSAS -o tsv)
+          echo "::add-mask::$SAS"
+          azcopy copy "$VHD" "$SAS" --blob-type PageBlob
+          set -x
+
+          az disk revoke-access --resource-group "$GALLERY_RG" --name "$DISK_NAME"
+
+          az rest --method PATCH \
+            --url "${DISK_ID}?api-version=2024-03-02" \
+            --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
+
+          IMAGE_VERSION_ID=$(az sig image-version create \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            --gallery-image-version "$GALLERY_VERSION" \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --os-snapshot "$DISK_ID" \
+            --query id -o tsv)
+
+          echo "Waiting for replication..."
+          for i in $(seq 1 30); do
+            prov=$(az sig image-version show \
+              --resource-group "$GALLERY_RG" --gallery-name "$GALLERY_NAME" \
+              --gallery-image-definition "$IMAGE_DEF" \
+              --gallery-image-version "$GALLERY_VERSION" \
+              --query provisioningState -o tsv)
+            repl=$(az sig image-version show \
+              --resource-group "$GALLERY_RG" --gallery-name "$GALLERY_NAME" \
+              --gallery-image-definition "$IMAGE_DEF" \
+              --gallery-image-version "$GALLERY_VERSION" \
+              --expand ReplicationStatus \
+              --query 'replicationStatus.aggregatedState' -o tsv 2>/dev/null || echo "Unknown")
+            echo "  attempt $i: prov=$prov repl=$repl"
+            [ "$prov" = "Succeeded" ] && [ "$repl" = "Completed" ] && break
+            [ "$prov" = "Failed" ] && { echo "::error::Replication failed"; exit 1; }
+            sleep 30
+          done
+          if [ "$prov" != "Succeeded" ] || [ "$repl" != "Completed" ]; then
+            echo "::error::Replication timed out"
+            exit 1
+          fi
+
+          echo "IMAGE_VERSION_ID=$IMAGE_VERSION_ID" >> "$GITHUB_ENV"
+          echo "GALLERY_VERSION=$GALLERY_VERSION"   >> "$GITHUB_ENV"
+
+          az disk delete --resource-group "$GALLERY_RG" --name "$DISK_NAME" --yes --no-wait
+
+      - name: Tag image version (Tier 1 only)
+        # Phase 3 only runs Tier 1 (QEMU nixosTest). The blessed=true tag
+        # is reserved for image versions that ALSO pass Tier 2 real-Azure
+        # smoke (Phase 4 - see docs/architecture-refactor.md D5). Tagging
+        # tier1=passed here keeps `deploy-workload` honest: it must select
+        # on blessed=true, not on tier1=passed.
+        run: |
+          set -euo pipefail
+          az tag create \
+            --resource-id "$IMAGE_VERSION_ID" \
+            --tags tier1=passed \
+                   bake-workflow=image-bake \
+                   bake-run="${{ github.run_id }}" \
+                   bake-sha="${{ github.sha }}"
+          echo "Tagged $GALLERY_VERSION as tier1=passed (blessed=true is set by Phase 4)"
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### image-bake summary"
+            echo
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Gallery version | \`${GALLERY_VERSION:-n/a}\` |"
+            echo "| Tier 1 | \`passed\` |"
+            echo "| Blessed | \`false\` (Tier 2 not yet implemented — Phase 4) |"
+            echo "| Trigger | \`${{ github.event_name }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
