@@ -1,0 +1,338 @@
+# deploy-workload.yml — Deploy plaz workload infrastructure
+#
+# Phase 5 of the workflow/image architecture refactor.
+# See docs/architecture-refactor.md for design decisions D1–D5.
+#
+# Replaces deploy-infra.yml. Key differences:
+#   - No stage-image job: images are produced by image-bake.yml
+#   - Consumes newest gallery image version tagged blessed=true
+#   - No run-command bootstrap: Comin is baked into the image (D2)
+#   - No SSH ingress from runner needed in steady state
+#   - Agenix host key delivered via cloud-init customData (D2 Option A):
+#       CI generates ssh_host_ed25519_key → private key to Key Vault →
+#       public key to secrets.nix → customData on az vm create →
+#       cloud-init writes key at first boot → Comin + agenix work from boot 0
+
+name: deploy-workload
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/deploy-workload.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Parameter file to use (without extension)'
+        required: true
+        default: 'plaz'
+
+permissions:
+  id-token: write   # OIDC
+  contents: read    # checkout; secrets push uses explicit GH_PAT
+
+env:
+  DEPLOYMENT_LOCATION: southcentralus
+  PROJECT_NAME: plaz
+
+concurrency:
+  # Do NOT cancel in-progress runs: the deploy job rotates the agenix host
+  # key, writes to Key Vault, and pushes re-encrypted secrets back to the
+  # repo. Cancelling mid-flight would leave the repo / Key Vault / VM in
+  # inconsistent states. Queue new runs instead.
+  group: workload-plaz-southcentralus
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Bicep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate main template
+        run: |
+          set -euxo pipefail
+          az bicep build --file infra/main.bicep
+
+  deploy:
+    name: Deploy
+    needs: validate
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── Resolve newest blessed gallery image version ───────────────────
+      - name: Resolve blessed image version
+        id: resolve-image
+        run: |
+          set -euo pipefail
+
+          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
+          GALLERY_NAME=$(az deployment sub show \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.galleryName.value' -o tsv)
+          IMAGE_DEF=$(az deployment sub show \
+            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.imageDefinitionName.value' -o tsv)
+
+          # List all versions, filter to blessed=true, pick the newest by publishedDate
+          BLESSED_ID=$(az sig image-version list \
+            --resource-group "$GALLERY_RG" \
+            --gallery-name "$GALLERY_NAME" \
+            --gallery-image-definition "$IMAGE_DEF" \
+            --query "[?tags.blessed=='true'] | sort_by(@, &publishingProfile.publishedDate) | [-1].id" \
+            -o tsv)
+
+          if [ -z "$BLESSED_ID" ]; then
+            echo "::error::No blessed gallery image version found. Run image-bake workflow first."
+            exit 1
+          fi
+
+          BLESSED_VERSION=$(az sig image-version show \
+            --ids "$BLESSED_ID" \
+            --query name -o tsv)
+
+          echo "Blessed image version: $BLESSED_VERSION"
+          echo "Blessed image ID:      $BLESSED_ID"
+          echo "NIXOS_IMAGE_ID=$BLESSED_ID"       >> "$GITHUB_ENV"
+          echo "BLESSED_VERSION=$BLESSED_VERSION"  >> "$GITHUB_ENV"
+
+      # ── Check VM state ────────────────────────────────────────────────
+      - name: Check VM state
+        id: vm-state
+        run: |
+          set -euo pipefail
+
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+
+          # Capture stdout and stderr separately. Mixing them risks a stray
+          # az-CLI warning on stderr being concatenated to the image-id and
+          # producing a spurious image_changed=true (forcing VM recreation).
+          STDERR_FILE=$(mktemp)
+          VM_IMAGE_ID=""
+          VM_SHOW_EXIT=0
+          VM_IMAGE_ID=$(az vm show \
+            --resource-group "$RG" --name "$VM_NAME" \
+            --query 'storageProfile.imageReference.id' -o tsv 2>"$STDERR_FILE") || VM_SHOW_EXIT=$?
+          VM_SHOW_STDERR=$(cat "$STDERR_FILE")
+          rm -f "$STDERR_FILE"
+          if [ -n "$VM_SHOW_STDERR" ]; then
+            echo "az vm show stderr: $VM_SHOW_STDERR"
+          fi
+
+          if [ $VM_SHOW_EXIT -ne 0 ]; then
+            if echo "$VM_SHOW_STDERR" | grep -qi "could not be found\|ResourceNotFound"; then
+              echo "vm_exists=false"   >> "$GITHUB_OUTPUT"
+              echo "image_changed=true" >> "$GITHUB_OUTPUT"
+              echo "VM does not exist — will be created"
+              exit 0
+            else
+              echo "::error::Unexpected error querying VM: $VM_SHOW_STDERR"
+              exit 1
+            fi
+          fi
+
+          echo "vm_exists=true" >> "$GITHUB_OUTPUT"
+          if [ "$VM_IMAGE_ID" = "$NIXOS_IMAGE_ID" ]; then
+            echo "image_changed=false" >> "$GITHUB_OUTPUT"
+            echo "VM already uses blessed image — no recreation needed"
+          else
+            echo "image_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Image changed — VM will be recreated"
+            echo "  current: $VM_IMAGE_ID"
+            echo "  target:  $NIXOS_IMAGE_ID"
+          fi
+
+      # ── Delete VM + OS disk if image changed ──────────────────────────
+      - name: Delete VM if image changed
+        if: steps.vm-state.outputs.image_changed == 'true' && steps.vm-state.outputs.vm_exists == 'true'
+        run: |
+          set -euo pipefail
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          OS_DISK="osdisk-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+
+          # --force-deletion bypasses soft-delete for the VM itself; the OS disk
+          # is deleted explicitly on the next line. NIC and public IP are left
+          # intact for Bicep to reuse (idempotent re-create on next deploy).
+          az vm delete --resource-group "$RG" --name "$VM_NAME" \
+            --force-deletion yes --yes
+          az disk delete --resource-group "$RG" --name "$OS_DISK" --yes
+
+      # ── Option A: generate agenix host key + customData payload ──────
+      # Only when VM is new or image changed (i.e. new VM will be created).
+      # Skipped for re-runs against an existing VM with the same image.
+      - name: Generate agenix host key and customData (Option A)
+        id: hostkey
+        if: steps.vm-state.outputs.image_changed == 'true'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$GH_PAT"
+
+          # ── Generate ed25519 host key pair ────────────────────────────
+          KEY_DIR=$(mktemp -d)
+          chmod 700 "$KEY_DIR"
+          ssh-keygen -t ed25519 -N '' \
+            -C 'gw1-host-key' \
+            -f "$KEY_DIR/ssh_host_ed25519_key" >/dev/null
+
+          PRIVKEY=$(cat "$KEY_DIR/ssh_host_ed25519_key")
+          PUBKEY=$(cat  "$KEY_DIR/ssh_host_ed25519_key.pub")
+
+          # ── Store private key in Key Vault ────────────────────────────
+          KV_NAME="kv-${{ env.PROJECT_NAME }}-scus"
+          az keyvault secret set \
+            --vault-name "$KV_NAME" \
+            --name "gw1-ssh-host-ed25519-key" \
+            --value "$PRIVKEY" \
+            --output none
+          echo "Private key stored in Key Vault: $KV_NAME / gw1-ssh-host-ed25519-key"
+
+          # ── Install age + ssh-to-age ──────────────────────────────────
+          sudo apt-get update -qq && sudo apt-get install -y -qq age
+          go install github.com/Mic92/ssh-to-age/cmd/ssh-to-age@v1.2.0
+          export PATH="$HOME/go/bin:$PATH"
+
+          # ── Derive age public key, update secrets.nix, re-encrypt ─────
+          VM_AGE_PUBKEY=$(echo "$PUBKEY" | ssh-to-age)
+          echo "VM age public key: $VM_AGE_PUBKEY"
+
+          {
+            echo '# secrets.nix — Agenix recipients list'
+            echo '#'
+            echo '# AUTO-POPULATED by deploy-workload.yml (Phase 5, Option A).'
+            echo '# Host key is generated in CI, stored in Key Vault, injected'
+            echo '# via cloud-init customData on VM creation.'
+            echo '# Do not edit key values manually.'
+            echo '#'
+            echo 'let'
+            echo '  # ── VM host keys ────────────────────────────────────────────────'
+            echo "  gw1 = \"$VM_AGE_PUBKEY\";"
+            echo ''
+            echo '  allSystems = [ gw1 ];'
+            echo 'in'
+            echo '{'
+            echo '  "comin-github-token.age".publicKeys = allSystems;'
+            echo '  "tailscale-authkey.age".publicKeys = allSystems;'
+            echo '}'
+          } > nixos/secrets/secrets.nix
+
+          # Re-encrypt comin-github-token.age for new recipient
+          printf '%s' "$GH_PAT" | age -r "$VM_AGE_PUBKEY" -a \
+            > nixos/secrets/comin-github-token.age
+
+          # tailscale-authkey.age — write placeholder; operator must
+          # re-encrypt with real key via: agenix -e nixos/secrets/tailscale-authkey.age
+          echo "::warning::tailscale-authkey.age written with placeholder. Re-encrypt with real Tailscale key after deploy."
+          printf 'PLACEHOLDER_REPLACE_WITH_REAL_KEY' \
+            | age -r "$VM_AGE_PUBKEY" -a > nixos/secrets/tailscale-authkey.age
+
+          # ── Commit secrets back to main ───────────────────────────────
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add nixos/secrets/
+
+          if git diff --cached --quiet; then
+            echo "No secrets changes to commit"
+          else
+            git commit -m "chore: rotate agenix host key for gw1 (Option A) [skip ci]"
+            git push \
+              "https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git" \
+              HEAD:main
+            echo "✅ Secrets committed"
+          fi
+
+          # ── Build cloud-init customData payload ───────────────────────
+          # Indentation inside the YAML content block matters for cloud-init.
+          # The private key lines are indented 6 spaces under `content: |`.
+          # Indent private key lines by 6 spaces to sit correctly under
+          # the YAML `content: |` block (2-space list indent + 4-space key indent).
+          PRIVKEY_INDENTED=$(echo "$PRIVKEY" | sed 's/^/      /')
+          CLOUD_INIT=$(cat <<CLOUDINIT
+#cloud-config
+write_files:
+  - path: /etc/ssh/ssh_host_ed25519_key
+    permissions: '0600'
+    owner: root:root
+    content: |
+$PRIVKEY_INDENTED
+  - path: /etc/ssh/ssh_host_ed25519_key.pub
+    permissions: '0644'
+    owner: root:root
+    content: |
+      $PUBKEY
+CLOUDINIT
+)
+
+          CUSTOM_DATA_B64=$(printf '%s' "$CLOUD_INIT" | base64 -w 0)
+          # Mask the payload before exporting: it contains the host private
+          # key and must never appear in Actions logs (e.g. via `set -x`).
+          echo "::add-mask::$CUSTOM_DATA_B64"
+          echo "CUSTOM_DATA_B64=$CUSTOM_DATA_B64" >> "$GITHUB_ENV"
+
+          # Cleanup key material from runner disk
+          rm -rf "$KEY_DIR"
+          echo "hostkey_generated=true" >> "$GITHUB_OUTPUT"
+
+      # ── Deploy Infrastructure ─────────────────────────────────────────
+      - name: Deploy Infrastructure
+        env:
+          ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+        run: |
+          set -euxo pipefail
+          if ! az deployment sub create \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file infra/main.bicep \
+            --parameters infra/environments/${{ github.event.inputs.environment || 'plaz' }}.bicepparam \
+            --name "deploy-${{ env.PROJECT_NAME }}"; then
+            echo "::error::Bicep deployment failed. Fetching error details..."
+            az deployment sub show \
+              --name "deploy-${{ env.PROJECT_NAME }}" \
+              --query 'properties.error' -o json || true
+            az deployment operation sub list \
+              --name "deploy-${{ env.PROJECT_NAME }}" \
+              --query "[?properties.statusCode != 'OK'].{resource: properties.targetResource.resourceName, status: properties.statusCode, message: properties.statusMessage.error.message}" \
+              -o table || true
+            exit 1
+          fi
+
+      - name: Show Outputs
+        run: |
+          set -euxo pipefail
+          az deployment sub show \
+            --name "deploy-${{ env.PROJECT_NAME }}" \
+            --query properties.outputs \
+            --output table
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### deploy-workload summary"
+            echo
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Blessed image | \`${BLESSED_VERSION:-n/a}\` |"
+            echo "| Image changed | \`${{ steps.vm-state.outputs.image_changed }}\` |"
+            echo "| Host key generated | \`${{ steps.hostkey.outputs.hostkey_generated || 'false' }}\` |"
+            echo "| Trigger | \`${{ github.event_name }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

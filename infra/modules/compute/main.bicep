@@ -25,6 +25,10 @@ param logAnalyticsWorkspaceId string
 @description('NixOS gallery image version resource ID (from Azure Compute Gallery)')
 param nixosImageId string
 
+@description('Base64-encoded cloud-init customData for first-boot configuration. Contains the SSH host private key — must be treated as a secret. Empty string means no customData is set.')
+@secure()
+param customData string = ''
+
 @description('Resource tags')
 param tags object
 
@@ -103,6 +107,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = if (hasImageVersion
     osProfile: {
       computerName: 'gw1'
       adminUsername: adminUsername
+      customData: empty(trim(customData)) ? null : customData
       linuxConfiguration: {
         disablePasswordAuthentication: true
         ssh: {

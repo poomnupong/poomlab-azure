@@ -169,11 +169,13 @@ Each phase is one PR. Each PR is independently revertible.
       `blessed=true` on the gallery image version. (`update-flake-lock.yml`
       already runs `nix flake update` in `image-bake/` alongside `nixos/`, so
       no change was required there for this phase.) *(PR #XX.)*
-- [ ] **Phase 5 — `deploy-workload`.** Rename `deploy-infra` →
-      `deploy-workload`. Switch image selection to "newest blessed gallery
-      image version". Delete the run-command bootstrap, NSG ephemeral
-      carve-out, and 409-retry logic. Replace with the chosen agenix
-      host-key delivery (D2 Option A or B).
+- [x] **Phase 5 — `deploy-workload`.** New `deploy-workload.yml` replaces
+      `deploy-infra.yml` (left in place; removed in Phase 7). Resolves newest
+      `blessed=true` gallery image version; deletes and recreates VM only when
+      image changes; implements D2 Option A agenix host-key delivery (CI-generated
+      ed25519 key → Key Vault `kv-plaz-scus` → `cloud-init customData` →
+      agenix secrets re-encrypted and committed). Bicep `customData` parameter
+      threaded through `main.bicep` → `compute/main.bicep`.
 - [ ] **Phase 6 — `landing-zone` workflow.** Extract gallery RG, network RG,
       Key Vault, monitoring into their own workflow with their own
       cadence/triggers.
@@ -184,10 +186,13 @@ Each phase is one PR. Each PR is independently revertible.
 
 ## Open questions
 
-1. **Agenix host key delivery (D2 A vs B).** Option A is cleaner but requires
-   plumbing `customData` through Bicep and pre-encrypting per-VM. Option B is
-   a small, time-bounded `az vm run-command` (seconds) and avoids changing
-   the Bicep contract. Recommend revisiting in Phase 5.
+1. ~~**Agenix host key delivery (D2 A vs B).**~~ **Resolved: Option A.**
+   CI generates the ed25519 host key pair, stores the private key in Key Vault
+   (`kv-plaz-scus`, secret `gw1-ssh-host-ed25519-key`), re-encrypts agenix
+   secrets for the new recipient, and injects the private key via
+   `cloud-init customData` on VM creation. Implemented in Phase 5.
+   Note: Key Vault `kv-plaz-scus` must exist before `deploy-workload` runs;
+   creation is tracked in Phase 6 (`landing-zone` workflow).
 2. **Blessed-version selector.** Gallery image-version tags vs a "latest"
    alias vs an output artifact from `image-bake` consumed by
    `deploy-workload` via `workflow_run`. Lean toward gallery tags for
