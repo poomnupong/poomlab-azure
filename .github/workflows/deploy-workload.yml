@@ -52,10 +52,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate main template
+      - name: Validate workload template
         run: |
           set -euxo pipefail
-          az bicep build --file infra/main.bicep
+          az bicep build --file infra/workload.bicep
 
   deploy:
     name: Deploy
@@ -75,6 +75,26 @@ jobs:
           client-id:       ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve landing-zone outputs
+        run: |
+          set -euo pipefail
+          SUBNET_ID=$(az deployment sub show \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.gatewaySubnetId.value' -o tsv 2>/dev/null || true)
+          LOG_WS_ID=$(az deployment sub show \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.logAnalyticsWorkspaceId.value' -o tsv 2>/dev/null || true)
+
+          if [ -z "$SUBNET_ID" ] || [ -z "$LOG_WS_ID" ]; then
+            echo "::error::Could not resolve landing-zone outputs (subnetId or logAnalyticsWorkspaceId). Run the landing-zone workflow first."
+            exit 1
+          fi
+
+          echo "SUBNET_ID=$SUBNET_ID"                     >> "$GITHUB_ENV"
+          echo "LOG_ANALYTICS_WORKSPACE_ID=$LOG_WS_ID"   >> "$GITHUB_ENV"
+          echo "Subnet ID:     $SUBNET_ID"
+          echo "Log workspace: $LOG_WS_ID"
 
       # ── Resolve newest blessed gallery image version ───────────────────
       - name: Resolve blessed image version
@@ -298,10 +318,11 @@ CLOUDINIT
           ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
         run: |
           set -euxo pipefail
+          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
           if ! az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
-            --template-file infra/main.bicep \
-            --parameters infra/environments/${{ github.event.inputs.environment || 'plaz' }}.bicepparam \
+            --template-file infra/workload.bicep \
+            --parameters "infra/environments/${ENV}-workload.bicepparam" \
             --name "deploy-${{ env.PROJECT_NAME }}"; then
             echo "::error::Bicep deployment failed. Fetching error details..."
             az deployment sub show \

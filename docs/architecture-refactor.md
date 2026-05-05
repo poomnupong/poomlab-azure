@@ -176,9 +176,17 @@ Each phase is one PR. Each PR is independently revertible.
       ed25519 key → Key Vault `kv-plaz-scus` → `cloud-init customData` →
       agenix secrets re-encrypted and committed). Bicep `customData` parameter
       threaded through `main.bicep` → `compute/main.bicep`.
-- [ ] **Phase 6 — `landing-zone` workflow.** Extract gallery RG, network RG,
-      Key Vault, monitoring into their own workflow with their own
-      cadence/triggers.
+- [x] **Phase 6 — `landing-zone` workflow.** Extracted gallery RG, network RG,
+      Key Vault, monitoring RG into `infra/landing-zone.bicep` +
+      `landing-zone.yml` with its own trigger/cadence. Created
+      `infra/modules/keyvault/main.bicep` (Key Vault `kv-plaz-scus` with RBAC
+      for CI SP). Created `infra/workload.bicep` (compute-only) and
+      `infra/environments/plaz-workload.bicepparam` /
+      `infra/environments/plaz-landing-zone.bicepparam`. Updated
+      `deploy-workload.yml` to resolve landing-zone outputs (subnetId,
+      logAnalyticsWorkspaceId) and deploy against `workload.bicep`.
+      `infra/main.bicep`, `infra/gallery.bicep`, and `deploy-infra.yml` are
+      left in place; removed in Phase 7. *(PR #XX, merged.)*
 - [ ] **Phase 7 — Documentation.** Update `README.md`,
       `docs/comin-deployment.md`, and add `docs/image-bake.md` to reflect the
       new model. Mark the run-command troubleshooting sections as
@@ -193,10 +201,9 @@ Each phase is one PR. Each PR is independently revertible.
    `cloud-init customData` on VM creation. Implemented in Phase 5.
    Note: Key Vault `kv-plaz-scus` must exist before `deploy-workload` runs;
    creation is tracked in Phase 6 (`landing-zone` workflow).
-2. **Blessed-version selector.** Gallery image-version tags vs a "latest"
-   alias vs an output artifact from `image-bake` consumed by
-   `deploy-workload` via `workflow_run`. Lean toward gallery tags for
-   auditability.
+2. ~~**Blessed-version selector.**~~ **Resolved:** gallery tag `blessed=true`,
+   newest version by `publishedDate`, resolved by `deploy-workload.yml` at
+   deploy time via `az sig image-version list`. Implemented in Phase 5.
 3. **Garbage collection.** How many historical gallery image versions to
    retain. Default proposal: keep last 4, delete older un-blessed versions
    eagerly.

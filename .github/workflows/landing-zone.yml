@@ -1,0 +1,127 @@
+# landing-zone.yml — Deploy platform infrastructure for plaz
+#
+# Phase 6 of the workflow/image architecture refactor.
+# See docs/architecture-refactor.md D4 for the CAF split rationale.
+#
+# Owns: monitoring RG + Log Analytics, network RG + VNET/subnets/NSGs/NAT,
+#       gallery RG + Compute Gallery + image definition,
+#       keyvault RG + Key Vault kv-plaz-scus.
+#
+# Trigger: manual or on changes to platform Bicep paths.
+# Cadence: rare — only when network topology, gallery definition, or
+#          Key Vault config changes.
+#
+# Outputs stored as subscription deployment 'landing-zone-plaz':
+#   gatewaySubnetId, logAnalyticsWorkspaceId, keyVaultName, etc.
+# These are consumed by deploy-workload.yml at deploy time.
+
+name: landing-zone
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment name (selects infra/environments/<name>-landing-zone.bicepparam)'
+        required: true
+        default: 'plaz'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/landing-zone.bicep'
+      - 'infra/modules/monitoring/**'
+      - 'infra/modules/networking/**'
+      - 'infra/modules/gallery/**'
+      - 'infra/modules/keyvault/**'
+      - 'infra/environments/*-landing-zone.bicepparam'
+      - '.github/workflows/landing-zone.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  DEPLOYMENT_LOCATION: southcentralus
+  PROJECT_NAME: plaz
+
+concurrency:
+  group: landing-zone-plaz-southcentralus
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Bicep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate landing-zone template
+        run: |
+          set -euxo pipefail
+          az bicep build --file infra/landing-zone.bicep
+
+  deploy:
+    name: Deploy Landing Zone
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Landing Zone Infrastructure
+        env:
+          CI_SP_OBJECT_ID: ${{ secrets.CI_SP_OBJECT_ID }}
+        run: |
+          set -euxo pipefail
+          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
+          if ! az deployment sub create \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file infra/landing-zone.bicep \
+            --parameters "infra/environments/${ENV}-landing-zone.bicepparam" \
+            --name "landing-zone-${{ env.PROJECT_NAME }}"; then
+            echo "::error::Landing zone deployment failed. Fetching error details..."
+            az deployment sub show \
+              --name "landing-zone-${{ env.PROJECT_NAME }}" \
+              --query 'properties.error' -o json || true
+            az deployment operation sub list \
+              --name "landing-zone-${{ env.PROJECT_NAME }}" \
+              --query "[?properties.statusCode != 'OK'].{resource: properties.targetResource.resourceName, status: properties.statusCode, message: properties.statusMessage.error.message}" \
+              -o table || true
+            exit 1
+          fi
+
+      - name: Show Outputs
+        run: |
+          az deployment sub show \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --query properties.outputs \
+            --output table
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### landing-zone summary"
+            echo
+            KV=$(az deployment sub show \
+              --name "landing-zone-${{ env.PROJECT_NAME }}" \
+              --query 'properties.outputs.keyVaultName.value' -o tsv 2>/dev/null || echo 'n/a')
+            SUBNET=$(az deployment sub show \
+              --name "landing-zone-${{ env.PROJECT_NAME }}" \
+              --query 'properties.outputs.gatewaySubnetId.value' -o tsv 2>/dev/null || echo 'n/a')
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Key Vault | \`${KV}\` |"
+            echo "| Gateway subnet | \`${SUBNET}\` |"
+            echo "| Trigger | \`${{ github.event_name }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
