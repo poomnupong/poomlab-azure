@@ -3,8 +3,18 @@
 # Uses Comin (GitOps pull model) for continuous deployment:
 #   - Comin polls this repo and runs nixos-rebuild switch automatically.
 #   - Secrets are encrypted with agenix and stored in git.
-#   - deploy-infra bootstraps Comin on first VM creation.
-#   - After bootstrap, all config changes are pulled automatically.
+#   - After Comin is running on the box, all config changes are pulled
+#     automatically — the runner is not in the deployment hot path.
+#
+# How Comin gets onto the box (in transition):
+#   - Today: deploy-infra bootstraps Comin on first VM creation via
+#     run-command + ephemeral SSH (see docs/comin-deployment.md). This is
+#     the legacy path and is the source of most operational pain.
+#   - Target: Comin is baked into the gallery image by the `image-bake`
+#     workflow; first boot already has comin.service running. The
+#     run-command bootstrap goes away in Phase 5.
+#   See docs/architecture-refactor.md (D2, D4) and tracking PR #45:
+#     https://github.com/poomnupong/poomlab-azure/pull/45
 #
 # Usage:
 #   nix flake check          — validate all host configs
@@ -14,7 +24,9 @@
 #   1. Add a nixosConfigurations.<vmname> entry below.
 #   2. Create a nixos/hosts/<vmname>/ directory with default.nix and hardware.nix.
 #   3. Add the VM's age public key to nixos/secrets/secrets.nix.
-#   4. Add a bootstrap step in deploy-infra.yml for the new VM.
+#   4. Until image-bake lands, add a bootstrap step in deploy-infra.yml for
+#      the new VM. After image-bake lands, no per-VM workflow change is
+#      needed beyond the gallery image already having Comin baked in.
 
 {
   description = "plaz NixOS host configurations";
