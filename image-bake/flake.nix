@@ -84,6 +84,18 @@
           # core_pulse.nix).
           system.stateVersion = lib.mkDefault "25.11";
 
+          # Comin asserts that either `networking.hostName` or
+          # `services.comin.hostname` is set; without one of these the eval
+          # fails with "You must set `networking.hostName` or
+          # `services.comin.hostname` explicitly in your NixOS configuration."
+          #
+          # Host-specific modules (which set `networking.hostName = "gw1"` etc.)
+          # are intentionally NOT imported here — they are layered on by Comin
+          # at deploy time via the runtime nixos/flake.nix. Provide a low-
+          # priority default so the bake/smoke-test eval succeeds; the host
+          # module's regular-priority assignment overrides this at deploy time.
+          networking.hostName = lib.mkDefault "plaz-image";
+
           # pkgs-unstable is expected by base.nix (for tailscale).
           # In the bake context we pin to stable - version is not critical here;
           # Comin will update via nixos-rebuild from the runtime flake.
