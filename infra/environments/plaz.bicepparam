@@ -14,3 +14,8 @@ param sshSourceAddressPrefix = '99.7.231.75/32'
 // NixOS image version resource ID — provided by the stage-image workflow job.
 // Falls back to empty string for validation-only runs (VM will not be deployed).
 param nixosImageId = readEnvironmentVariable('NIXOS_IMAGE_ID', '')
+
+// cloud-init customData for agenix host key injection (Option A).
+// Populated by deploy-workload.yml when VM is created or recreated.
+// Empty string for no-op deploys (VM already exists with same image).
+param customData = readEnvironmentVariable('CUSTOM_DATA_B64', '')

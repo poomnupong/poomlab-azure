@@ -42,6 +42,9 @@ param nixosImageId string = ''
 @description('Source address prefix for SSH access (e.g. your public IP in CIDR notation). Leave empty to omit the SSH rule.')
 param sshSourceAddressPrefix string = ''
 
+@description('Base64-encoded cloud-init customData for first-boot host key injection (Option A agenix key delivery). Leave empty for no-op deploys where VM already exists.')
+param customData string = ''
+
 @description('Tags applied to all resources')
 param tags object = {
   project: projectName
@@ -138,6 +141,7 @@ module compute 'modules/compute/main.bicep' = {
     subnetId: networking.outputs.gatewaySubnetId
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
     nixosImageId: nixosImageId
+    customData: customData
     tags: tags
   }
 }
