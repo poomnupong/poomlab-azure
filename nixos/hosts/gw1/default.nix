@@ -4,9 +4,17 @@
 # Import shared modules from ../../modules/ and add host-specific overrides here.
 #
 # Deployed via Comin (GitOps pull model):
-#   - deploy-infra bootstraps Comin on first VM creation.
 #   - Comin polls this repo and applies config changes automatically.
 #   - Secrets are encrypted with agenix and stored in git.
+#   - First-boot bootstrap of Comin is currently performed by deploy-infra
+#     (legacy path); the upcoming image-bake workflow will bake Comin into
+#     the gallery image so the bootstrap step disappears. See
+#     docs/architecture-refactor.md and PR #45.
+#
+# Comin + agenix wiring lives in ../../modules/comin.nix and
+# ../../modules/agenix.nix (imported once in ../../flake.nix). Do not
+# duplicate that wiring here — it is intentionally the single swappable
+# seam for the GitOps mechanism.
 
 { config, pkgs, ... }:
 

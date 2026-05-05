@@ -9,7 +9,23 @@
 #   - Scoped to this repo with Contents (R/W), Pull requests (R/W),
 #     and Commit statuses (R/W) permissions.
 #
-# See docs/comin-deployment.md for the full architecture.
+# See docs/comin-deployment.md for the full runtime architecture.
+#
+# ── Architectural role (refactor in progress) ───────────────────────────
+# This module is the single, swappable "GitOps mechanism" seam called out in
+# the workflow/image refactor (see docs/architecture-refactor.md, D3 + D4 +
+# Phase 2; tracking PR #45 — https://github.com/poomnupong/poomlab-azure/pull/45).
+#
+# What that means for agents touching this file:
+#   - Comin + agenix wiring lives ONLY here (and modules/agenix.nix). Do not
+#     re-introduce Comin config into host modules (nixos/hosts/<host>/*).
+#   - Anything baked into the gallery image by the future `image-bake`
+#     workflow (Phase 3) will be exactly this module + modules/agenix.nix.
+#     Keep this module self-contained and side-effect-free at evaluation
+#     time so it's safe to evaluate offline against a fixture flake.
+#   - If Comin is ever swapped for deploy-rs / Colmena / similar, the swap
+#     is intended to be: replace this module, replace the matching workflow
+#     step, done. Do not couple anything host-specific in here.
 
 { config, pkgs, lib, ... }:
 

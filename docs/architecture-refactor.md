@@ -134,11 +134,18 @@ that tag.
 
 Each phase is one PR. Each PR is independently revertible.
 
-- [ ] **Phase 1 — Tracking PR (this doc).** No behavioral change. Establishes
-      shared vocabulary and the rollout plan. *(this PR)*
-- [ ] **Phase 2 — `nixos/modules/comin.nix`.** Extract Comin + agenix wiring
+- [x] **Phase 1 — Tracking PR (this doc).** No behavioral change. Establishes
+      shared vocabulary and the rollout plan. *(PR #45, merged.)*
+- [x] **Phase 2 — `nixos/modules/comin.nix`.** Extract Comin + agenix wiring
       from `nixos/hosts/gw1/` into a reusable module. No behavior change
-      yet — module is imported in the same place.
+      yet — module is imported in the same place. *(No-op: the module was
+      already factored into `nixos/modules/comin.nix` and
+      `nixos/modules/agenix.nix` during earlier work; `nixos/flake.nix`
+      imports them once per host. Confirmed no host-level duplication
+      remains. Stale "deploy-infra bootstraps Comin" comments refreshed in
+      `nixos/flake.nix` and `nixos/hosts/gw1/default.nix`, and a pointer to
+      this doc / PR #45 was added to the top of `nixos/modules/comin.nix`
+      so future agents land on the architectural context.)*
 - [ ] **Phase 3 — `image-bake` workflow.** New workflow that consumes the
       upstream VHD, layers `comin.nix`, publishes a gallery image version,
       runs Tier 1 smoke (`nixosTest`), and tags the version. No consumer
