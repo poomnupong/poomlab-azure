@@ -162,9 +162,13 @@ Each phase is one PR. Each PR is independently revertible.
       `nixpkgs-stable` (matching the `nixosSystem` they feed) instead of
       the unstable `nixpkgs`.
       *(PR #XX, merged.)*
-- [ ] **Phase 4 — Tier 2 smoke.** Add real-Azure smoke job to `image-bake`
-      gated on Tier 1 success. On pass, set `blessed=true` tag and remove
-      it from older versions.
+- [x] **Phase 4 — Tier 2 smoke.** Added `smoke-tier2` job to `image-bake.yml`:
+      provisions a throwaway VM from the new gallery image version, waits for
+      waagent via `az vm get-instance-view`, asserts `comin.service` active via
+      run-command and single-attempt SSH, tears down smoke RG, then sets
+      `blessed=true` on the gallery image version. Also updated
+      `update-flake-lock.yml` to keep `image-bake/flake.lock` fresh alongside
+      `nixos/flake.lock`. *(PR #XX, merged.)*
 - [ ] **Phase 5 — `deploy-workload`.** Rename `deploy-infra` →
       `deploy-workload`. Switch image selection to "newest blessed gallery
       image version". Delete the run-command bootstrap, NSG ephemeral
