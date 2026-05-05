@@ -10,7 +10,9 @@
 #
 # Jobs:
 #   build   - nix build + Tier 1 nixosTest smoke (always, no Azure cost)
-#   publish - upload VHD to gallery + tag blessed (main branch only)
+#   publish - upload VHD to gallery + tag tier1=passed (main branch only).
+#             blessed=true is intentionally NOT set here - it is reserved
+#             for image versions that also pass Tier 2 (Phase 4).
 
 name: image-bake
 
@@ -19,6 +21,14 @@ on:
     # Saturday 14:00 UTC - after nixos-azimage-builder weekly_forge (06:00 UTC)
     - cron: "0 14 * * 6"
   push:
+    branches: [main]
+    paths:
+      - 'nixos/modules/**'
+      - 'nixos/flake.nix'
+      - 'nixos/flake.lock'
+      - 'image-bake/**'
+      - '.github/workflows/image-bake.yml'
+  pull_request:
     branches: [main]
     paths:
       - 'nixos/modules/**'
@@ -114,8 +124,9 @@ jobs:
           retention-days: 3
 
   # -----------------------------------------------------------------------
-  # Job 2: publish - upload VHD to Compute Gallery, tag blessed
+  # Job 2: publish - upload VHD to Compute Gallery, tag tier1=passed
   # Runs only on main branch. Requires Azure OIDC.
+  # blessed=true is set by Phase 4 (Tier 2 real-Azure smoke), not here.
   # -----------------------------------------------------------------------
   publish:
     name: Publish to Gallery
@@ -132,6 +143,22 @@ jobs:
           client-id:       ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy Gallery Infrastructure
+        # Idempotent. Mirrors deploy-infra so a fresh environment (or a
+        # gallery RG that has been torn down) gets the gallery, image
+        # definition, and supporting RBAC re-created before publish.
+        run: |
+          set -euxo pipefail
+          az deployment sub create \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file infra/gallery.bicep \
+            --parameters location="${{ env.DEPLOYMENT_LOCATION }}" \
+                         projectName="${{ env.PROJECT_NAME }}" \
+            --name "gallery-${{ env.PROJECT_NAME }}"
 
       - name: Download VHD artifact
         uses: actions/download-artifact@v4
@@ -245,16 +272,21 @@ jobs:
 
           az disk delete --resource-group "$GALLERY_RG" --name "$DISK_NAME" --yes --no-wait
 
-      - name: Tag image version as blessed
+      - name: Tag image version (Tier 1 only)
+        # Phase 3 only runs Tier 1 (QEMU nixosTest). The blessed=true tag
+        # is reserved for image versions that ALSO pass Tier 2 real-Azure
+        # smoke (Phase 4 - see docs/architecture-refactor.md D5). Tagging
+        # tier1=passed here keeps `deploy-workload` honest: it must select
+        # on blessed=true, not on tier1=passed.
         run: |
           set -euo pipefail
           az tag create \
             --resource-id "$IMAGE_VERSION_ID" \
-            --tags blessed=true \
+            --tags tier1=passed \
                    bake-workflow=image-bake \
                    bake-run="${{ github.run_id }}" \
                    bake-sha="${{ github.sha }}"
-          echo "Tagged $GALLERY_VERSION as blessed=true"
+          echo "Tagged $GALLERY_VERSION as tier1=passed (blessed=true is set by Phase 4)"
 
       - name: Job summary
         if: always()
@@ -265,7 +297,8 @@ jobs:
             echo "| Field | Value |"
             echo "|-------|-------|"
             echo "| Gallery version | \`${GALLERY_VERSION:-n/a}\` |"
-            echo "| Blessed | \`true\` |"
+            echo "| Tier 1 | \`passed\` |"
+            echo "| Blessed | \`false\` (Tier 2 not yet implemented — Phase 4) |"
             echo "| Trigger | \`${{ github.event_name }}\` |"
             echo "| Commit | \`${{ github.sha }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

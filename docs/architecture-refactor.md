@@ -104,14 +104,21 @@ version from "built" to **blessed**. `deploy-workload` only ever sees blessed
 versions, so it can assume the image works.
 
 - **Tier 1 — `nixosTest` in QEMU on the runner.** Runs on every
-  `image-bake` invocation. Boots the baked image, asserts:
-  - `comin.service` is `active` and has performed at least one fetch.
-  - agenix-decrypted secrets are readable.
-  - `nixos-rebuild dry-activate` against a fixture flake succeeds.
-  - waagent is enabled and healthy
-    (see `virtualisation.azure.agent.enable` requirement).
+  `image-bake` invocation. Boots the application module set
+  (Comin, agenix, base, networking) under the test driver and asserts:
+  - The full module set evaluates without option conflicts and the
+    system reaches `multi-user.target`.
+  - `comin.service` is defined and points at the configured GitOps
+    remote (`postDeploymentCommand`, `services.comin.remotes`, etc.).
+  - The agenix module activates cleanly (with a fixture-empty
+    `age.secrets` to avoid Tier 2 territory).
+  - Core wiring contract: `nix-ld`, IP forwarding, sshd, `azureuser`.
 
-  Fast, free, catches ~80 % of regressions.
+  Fast, free, catches module-eval / unit-definition regressions. It
+  intentionally does NOT exercise Comin actually fetching from GitHub,
+  agenix actually decrypting `.age` files, the upstream Azure hardware
+  baseline (`core_pulse.nix` collides with the test driver's own
+  bootloader), or waagent (no Azure fabric). Those are Tier 2.
 
 - **Tier 2 — Real Azure smoke (only on publish).** Spin up a throwaway VM in
   a sandbox RG from the new gallery image version, point Comin at a sandbox
@@ -148,13 +155,16 @@ Each phase is one PR. Each PR is independently revertible.
       so future agents land on the architectural context.)*
 - [x] **Phase 3 — `image-bake` workflow.** New workflow that consumes the
       upstream VHD, layers `comin.nix`, publishes a gallery image version,
-      runs Tier 1 smoke (`nixosTest`), and tags the version as `blessed=true`.
-      Also fixed `nixos/flake.nix` to add missing `agenix` and `comin` flake
-      inputs required by `nixos/modules/agenix.nix` and `nixos/modules/comin.nix`.
+      and runs Tier 1 smoke (`nixosTest`). Phase 3 tags successful versions
+      as `tier1=passed` only; the `blessed=true` tag is reserved for
+      versions that also pass Tier 2 (set by Phase 4). Also fixed
+      `nixos/flake.nix` so `agenix` and `comin` inputs follow
+      `nixpkgs-stable` (matching the `nixosSystem` they feed) instead of
+      the unstable `nixpkgs`.
       *(PR #XX, merged.)*
 - [ ] **Phase 4 — Tier 2 smoke.** Add real-Azure smoke job to `image-bake`
       gated on Tier 1 success. On pass, set `blessed=true` tag and remove
-      from older versions.
+      it from older versions.
 - [ ] **Phase 5 — `deploy-workload`.** Rename `deploy-infra` →
       `deploy-workload`. Switch image selection to "newest blessed gallery
       image version". Delete the run-command bootstrap, NSG ephemeral
