@@ -1,8 +1,7 @@
 # Comin Deployment Model
 
 This document describes the GitOps pull-based deployment model used for NixOS
-VMs in this repository. It replaces the previous push-based `deploy-nixos.yml`
-approach.
+VMs in this repository.
 
 ## Architecture Overview
 
@@ -10,25 +9,27 @@ approach.
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         GitHub Repository                          │
 │                                                                     │
-│  nixos/                    .github/workflows/                       │
-│  ├── flake.nix             ├── deploy-infra.yml  (bootstrap)       │
-│  ├── modules/              ├── comin-status.yml  (health check)    │
-│  │   ├── comin.nix         ├── rotate-secrets-reminder.yml         │
-│  │   ├── agenix.nix        └── update-flake-lock.yml               │
-│  │   └── ...                                                        │
-│  └── secrets/                                                       │
-│      ├── secrets.nix       (age public keys / recipients)          │
-│      ├── comin-github-token.age                                     │
-│      └── tailscale-authkey.age                                      │
+│  image-bake/               nixos/                                   │
+│  └── flake.nix             ├── flake.nix                            │
+│  (build-time flake)        ├── modules/                             │
+│                            │   ├── comin.nix                        │
+│  .github/workflows/        │   ├── agenix.nix                       │
+│  ├── image-bake.yml        │   └── ...                              │
+│  ├── landing-zone.yml      └── secrets/                             │
+│  ├── deploy-workload.yml       ├── secrets.nix                      │
+│  ├── comin-status.yml          ├── comin-github-token.age           │
+│  ├── rotate-secrets-reminder.yml└── tailscale-authkey.age           │
+│  └── update-flake-lock.yml                                          │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │ polls every 60s
                            ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Azure VM (gw1)                              │
 │                                                                     │
-│  Comin service        → pulls repo, runs nixos-rebuild switch      │
-│  Agenix               → decrypts .age secrets using SSH host key   │
-│  postDeploymentCommand → reports commit status / creates issues     │
+│  Comin service (baked in image) → pulls repo, nixos-rebuild switch │
+│  cloud-init (first boot)        → writes SSH host key from customData│
+│  Agenix                         → decrypts .age secrets using host key│
+│  postDeploymentCommand          → reports commit status / issues    │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │ reports status
                            ▼
@@ -38,19 +39,17 @@ approach.
 
 ## How It Works
 
-### 1. Bootstrap (one-time, via `deploy-infra.yml`)
+### 1. First Boot (automatic)
 
-When `deploy-infra` creates or recreates a VM:
-
-1. The workflow writes the GitHub PAT to `/run/agenix/comin-github-token`
-   (temporary bootstrap — agenix takes over after first rebuild).
-2. Runs `nixos-rebuild switch --flake github:<repo>?dir=nixos#gw1` once.
-3. This first apply installs Comin + agenix + all modules.
-4. Comin takes over immediately — it is self-sustaining from this point.
+When `deploy-workload` creates the VM, cloud-init (via Bicep `osProfile.customData`)
+writes `/etc/ssh/ssh_host_ed25519_key` at first boot. Comin is already installed
+in the image and starts immediately, polls this repo, and runs
+`nixos-rebuild switch`. Agenix decrypts secrets using the now-present host key.
+No `az vm run-command` bootstrap is needed.
 
 ### 2. Ongoing Deployment (automatic, via Comin)
 
-After bootstrap, the flow is fully automatic:
+After first boot, the flow is fully automatic:
 
 1. You push config changes to `main` (via PR → merge).
 2. Comin (running on each VM) polls this repo every 60 seconds.
@@ -65,7 +64,6 @@ The `comin-status` workflow provides fallback visibility:
 
 - **Automatic**: runs daily at 06:00 UTC.
 - **Manual**: trigger via `workflow_dispatch`.
-- **After infra deploy**: triggered by `deploy-infra` completion.
 
 It uses `az vm run-command invoke` to check if the Comin systemd service
 is active on each VM.
@@ -93,39 +91,36 @@ nixos/secrets/
 
 ### Initial Setup — Fully Automated
 
-**No manual steps are required.** When `deploy-infra` creates a VM:
+**No manual steps are required.** When `deploy-workload` creates a VM:
 
-1. The bootstrap step writes the PAT and runs `nixos-rebuild switch`
-   (installs Comin + agenix).
-2. The auto-setup step then:
-   - Extracts the VM's SSH host ed25519 public key via `az vm run-command`
-   - Converts it to an age public key using `ssh-to-age`
-   - Updates `nixos/secrets/secrets.nix` with the real key
-   - Encrypts `GH_PAT` → `comin-github-token.age` using `age`
-   - Commits and pushes to `main`
-3. Comin (now running on the VM) pulls the commit with properly encrypted
-   secrets. Agenix decrypts them using the VM's SSH host key.
+1. `deploy-workload` generates a fresh ed25519 host key pair in CI.
+2. Stores the private key in Key Vault `kv-plaz-scus`
+   (secret `gw1-ssh-host-ed25519-key`).
+3. Re-encrypts agenix secrets for the new recipient, commits
+   `secrets.nix` + `.age` files to `main`.
+4. Passes the private key as base64 `customData` to Bicep.
+5. On VM first boot, cloud-init writes the private key to
+   `/etc/ssh/ssh_host_ed25519_key`.
+6. Comin starts, pulls config, and agenix decrypts secrets using the
+   now-present host key.
 
-**The only manual prerequisite:** set the `GH_PAT` repository secret.
+**The only manual prerequisite:** set the `GH_PAT` and `CI_SP_OBJECT_ID`
+repository secrets and run `landing-zone` once before `deploy-workload`.
 
 ### Rotating a Secret
 
-To rotate secrets, you have two options:
-
-**Option A (hands-free):** Update the `GH_PAT` repository secret, then
-re-run `deploy-infra` — it re-encrypts and commits automatically.
-
-**Option B (local `agenix -e`):** If you want to edit secrets locally,
-you need to add your own age public key to `nixos/secrets/secrets.nix`
-so that agenix can encrypt for both you and the VM. To derive your age
-key from your SSH key:
+To rotate secrets, edit locally with `agenix -e`:
 
 ```bash
+# Add your own age key to secrets.nix if not already present
 cat ~/.ssh/id_ed25519.pub | ssh-to-age
+# Add the resulting age1... key to nixos/secrets/secrets.nix
+# Re-encrypt all secrets for the updated recipient list
+cd nixos && agenix -r
+# Edit a specific secret
+cd nixos && agenix -e secrets/comin-github-token.age
+git add secrets/ && git commit -m "chore: rotate secret" && git push
 ```
-
-Add the resulting `age1...` key to `secrets.nix`, re-encrypt with
-`agenix -r`, then use `agenix -e` to edit secrets locally.
 
 ### Rotating the GitHub PAT
 
@@ -137,9 +132,7 @@ Add the resulting `age1...` key to `secrets.nix`, re-encrypt with
    ```bash
    gh secret set GH_PAT --body "<new-token>"
    ```
-3. **Option A (hands-free):** Run `deploy-infra` — it will re-encrypt the PAT
-   automatically and commit the updated `.age` file.
-4. **Option B (local):** Update the agenix-encrypted token locally:
+3. Update the agenix-encrypted token:
    ```bash
    cd nixos && agenix -e secrets/comin-github-token.age
    # Paste the new PAT, save
@@ -150,9 +143,10 @@ Add the resulting `age1...` key to `secrets.nix`, re-encrypt with
 
 Only needed if a VM is compromised or rebuilt:
 
-1. Rebuild VM via `deploy-infra` (new SSH host keys generated).
-2. `deploy-infra` automatically extracts the new age key, re-encrypts
-   secrets, and commits to the repo. **No manual steps needed.**
+1. Rebuild VM via `deploy-workload` (new SSH host keys generated automatically).
+2. `deploy-workload` automatically generates a new ed25519 key pair, stores
+   it in Key Vault, re-encrypts agenix secrets for the new recipient, and
+   commits to the repo. **No manual steps needed.**
 3. If you prefer manual control:
    ```bash
    ssh-keyscan <vm-ip> 2>/dev/null | nix run nixpkgs#ssh-to-age
@@ -188,11 +182,13 @@ and creates an issue with a checklist for reviewing all secrets.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `deploy-infra` | Push to `main` on `infra/**`, or manual | Deploys Azure infra + bootstraps Comin on new VMs |
-| `comin-status` | Daily, manual, or after deploy-infra | Health check — queries Comin status on all VMs |
-| `ci-pr` | Pull request → `main` | Validation gate (Bicep + NixOS flake check) |
-| `update-flake-lock` | Weekly or manual | Updates `flake.lock` and opens a PR |
-| `rotate-secrets-reminder` | Monthly or manual | Creates issue reminding to rotate secrets |
+| `image-bake` | Saturday 14:00 UTC + `nixos/**`/`image-bake/**` changes + manual | Builds baked NixOS image, Tier 1 + Tier 2 smoke, tags `blessed=true` |
+| `landing-zone` | Manual + platform Bicep path changes | Deploys platform resources (monitoring, networking, gallery, Key Vault) |
+| `deploy-workload` | Push to `main` on `infra/**` + manual | Deploys gw1 from blessed image; injects host key via cloud-init; no SSH bootstrap |
+| `comin-status` | Daily + manual | Health check — queries Comin status on all VMs |
+| `ci-pr` | Pull request → `main` | Validation gate (Bicep lint + NixOS flake check) |
+| `update-flake-lock` | Weekly Monday 08:00 UTC + manual | Updates `nixos/flake.lock` and `image-bake/flake.lock`, opens PR |
+| `rotate-secrets-reminder` | Monthly 1st + manual | Creates issue reminding to rotate secrets |
 
 ## Adding a New VM
 
@@ -200,25 +196,22 @@ and creates an issue with a checklist for reviewing all secrets.
 2. Add an entry in `nixos/flake.nix` under `nixosConfigurations` (include
    `comin.nixosModules.comin`, `./modules/comin.nix`,
    `agenix.nixosModules.default`, `./modules/agenix.nix`).
-3. Add the VM's age public key to `nixos/secrets/secrets.nix`.
-4. Re-encrypt secrets: `cd nixos && agenix -r`.
-5. Add a bootstrap step in `deploy-infra.yml` for the new VM.
-6. Add a status check job in `comin-status.yml`.
+3. Add a VM block in `infra/workload.bicep` for the new VM.
+4. Add `deploy-workload.yml` steps for the new VM (resolve image, generate
+   host key, deploy).
+5. Add a status check job in `comin-status.yml`.
+6. Run `landing-zone` if new platform resources are needed.
+7. Run `deploy-workload` to create the VM — host key and agenix secrets are
+   handled automatically.
 
 ## Known Issues / Future Work
 
-- **`az vm run-command` conflicts**: When `timeout` kills the local `az`
-  process, the VM-side RunCommand extension keeps running. Subsequent
-  `run-command invoke` calls fail with HTTP 409 Conflict until it finishes.
-  The bootstrap step avoids this by using **a single, untimed Run Command
-  call** (only to inject the ephemeral SSH key + capture the host key) and
-  doing the Comin status probe **in-band over SSH** instead. A long-term
-  fix would be to **move SSH key injection into the Bicep
-  `osProfile.linuxConfiguration.ssh.publicKeys`** so that the ephemeral
-  key is baked into VM creation, eliminating Run Command from bootstrap
-  entirely.
+- **`tailscale-authkey.age`** is written with a placeholder; must be
+  re-encrypted with a real Tailscale auth key after first deploy.
 
-- **Comin vs pure in-band SSH**: Comin provides GitOps pull (VM
-  self-updates on push, no CI needed). Pure SSH means every config change
-  needs a CI run. If Comin adds more complexity than value, switching to
-  pure SSH for all deploys would simplify the workflow significantly.
+- **Tier 2 smoke test runner** requires `Contributor` on the subscription
+  (creates a real Azure VM in a sandbox RG `rg-plaz-smoke-<run_id>`).
+
+- **Garbage collection:** keep last 4 blessed gallery image versions; older
+  un-blessed versions deleted eagerly after Tier 2 smoke. See
+  [`docs/image-bake.md`](image-bake.md) for details.

@@ -21,6 +21,8 @@ Resources are organized into purpose-specific resource groups following Azure Cl
 |---|---|---|
 | `rg-plaz-monitoring-<region>` | Monitoring & diagnostics | Log Analytics workspace, diagnostic settings |
 | `rg-plaz-network-<region>` | Networking | VNETs, subnets, NSGs, public IPs, route tables |
+| `rg-plaz-gallery-<region>` | Compute Gallery | Azure Compute Gallery, image definitions, image versions |
+| `rg-plaz-keyvault-<region>` | Key Vault | Key Vault `kv-plaz-scus` (SSH host keys, RBAC for CI SP) |
 | `rg-plaz-compute-<region>` | Compute workloads | VMs, disks, NICs |
 
 ### Naming Convention
@@ -51,40 +53,53 @@ Subnets:
 
 ### NixOS VM & Flake Hierarchy
 
-The NixOS VM uses a custom image from [nixos-azimage-builder](https://github.com/poomnupong/nixos-azimage-builder). Recommended flake hierarchy:
+This repository uses **two separate Nix flakes**:
+
+- **`image-bake/`** — build-time flake. Layers Comin, agenix, base, and networking modules onto the upstream [nixos-azimage-builder](https://github.com/poomnupong/nixos-azimage-builder) VHD baseline and publishes a gallery image version. The baked image has `comin.service` running from first boot. See [`docs/image-bake.md`](docs/image-bake.md).
+
+- **`nixos/`** — runtime flake consumed by Comin on each VM. Contains host configurations and modules that Comin applies via `nixos-rebuild switch`.
 
 ```
-nixos-config/
-├── flake.nix              # Top-level flake
-├── flake.lock
+image-bake/
+├── flake.nix              # Build-time flake (produces gallery-ready VHD)
+└── flake.lock
+
+nixos/
+├── flake.nix               # Runtime flake with nixosConfigurations output
+├── flake.lock              # Refreshed weekly by update-flake-lock workflow
 ├── hosts/
 │   └── gw1/
-│       ├── default.nix    # Host-specific config (hostname, networking, tailscale)
-│       └── hardware.nix   # Azure-specific hardware config
+│       ├── default.nix     # Host-specific config (hostname, networking, firewall)
+│       └── hardware.nix    # Azure Gen2 hardware config (NVMe+SCSI, boot loader, Hyper-V)
 ├── modules/
-│   ├── base.nix           # Common base config (users, ssh, nix settings)
-│   ├── tailscale.nix      # Tailscale module
-│   ├── networking.nix     # Network appliance / routing config
-│   └── monitoring.nix     # Azure monitoring agent, log forwarding
-└── overlays/              # Custom package overlays
+│   ├── base.nix            # Common: users, SSH authorized keys, Nix settings
+│   ├── comin.nix           # Comin GitOps service + status reporting callback
+│   ├── agenix.nix          # Agenix secret declarations
+│   ├── tailscale.nix       # Tailscale VPN module
+│   ├── networking.nix      # IP forwarding, routing (NVA role)
+│   └── monitoring.nix      # node_exporter for Azure Monitor
+└── secrets/
+    ├── secrets.nix         # Age public keys (recipients list)
+    ├── comin-github-token.age   # Encrypted GitHub PAT
+    └── tailscale-authkey.age    # Encrypted Tailscale auth key
 ```
 
-The flake should reference the `nixos-azimage-builder` repo as an input for the base image configuration, then layer host-specific and role-specific modules on top.
+Each host under `nixos/hosts/<vmname>/` is self-contained — `default.nix` imports the shared modules and adds host-specific overrides.
 
 ## CI/CD Workflows
 
-Five GitHub Actions workflows manage validation, deployment, and maintenance:
-
 | Workflow | File | Trigger | Purpose |
 |---|---|---|---|
-| `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | **Validation only — never deploys.** Uses `dorny/paths-filter` to run only the relevant checks: Bicep lint + `az deployment what-if` for `infra/**` changes; `nix flake check` for `nixos/**` changes. These are the required status checks for branch protection. |
-| `deploy-infra` | `.github/workflows/deploy-infra.yml` | Push to `main` on `infra/**`, or `workflow_dispatch` | Stages the NixOS gallery image, deploys Bicep infrastructure, and **bootstraps Comin** on newly created VMs. After bootstrap, VMs pull config changes automatically. |
-| `comin-status` | `.github/workflows/comin-status.yml` | Daily, manual, or after `deploy-infra` | Health check — queries Comin service status on all VMs via `az vm run-command invoke`. Provides fleet visibility in the Actions tab. |
-| `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly schedule (Monday 08:00 UTC), or `workflow_dispatch` | Runs `nix flake update` and opens a PR with the refreshed `nixos/flake.lock`. Requires `GH_PAT` secret so the PR triggers `ci-pr.yml`. After merge, Comin picks up the updated lock automatically. |
-| `rotate-secrets-reminder` | `.github/workflows/rotate-secrets-reminder.yml` | Monthly (1st of month), or `workflow_dispatch` | Creates a GitHub issue with a checklist for reviewing and rotating secrets (GitHub PAT, Tailscale auth key, etc.). |
-| `destroy-infra` | `.github/workflows/destroy-infra.yml` | Manual only (`workflow_dispatch`) | **Deletes all Azure resource groups.** Requires typing `destroy` to confirm. Use for full environment reset. See [`docs/destroy-infra.md`](docs/destroy-infra.md). |
+| `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | Validation only. Bicep lint + NixOS flake check. |
+| `image-bake` | `.github/workflows/image-bake.yml` | Saturday 14:00 UTC + `nixos/**`/`image-bake/**` changes + manual | Builds baked NixOS image with Comin pre-installed. Tier 1 QEMU smoke + Tier 2 real-Azure smoke. Tags `blessed=true` on success. |
+| `landing-zone` | `.github/workflows/landing-zone.yml` | Manual + platform Bicep path changes | Deploys platform resources: monitoring, VNET/NSGs, Compute Gallery, Key Vault. |
+| `deploy-workload` | `.github/workflows/deploy-workload.yml` | Push to `main` on `infra/**` + manual | Deploys gw1. Resolves newest `blessed=true` image. Option A agenix key delivery via cloud-init. No SSH bootstrap. |
+| `comin-status` | `.github/workflows/comin-status.yml` | Daily + manual | Health check — Comin status on all VMs. |
+| `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly Monday 08:00 UTC + manual | Updates `nixos/flake.lock` and `image-bake/flake.lock`, opens PR. |
+| `rotate-secrets-reminder` | `.github/workflows/rotate-secrets-reminder.yml` | Monthly 1st + manual | Creates GitHub issue with secrets rotation checklist. |
+| `destroy-infra` | `.github/workflows/destroy-infra.yml` | Manual only | Deletes all Azure resource groups. |
 
-**Key principle:** `ci-pr` acts as the gate — it runs on every PR and must pass before merging. After merge to `main`, Comin (running on each VM) polls this repo every 60 seconds and applies the new config automatically. The `deploy-infra` workflow only needs to bootstrap Comin on the first deploy — all subsequent changes are pulled by the VMs themselves.
+**Key principle:** `ci-pr` acts as the gate — it runs on every PR and must pass before merging. After merge to `main`, Comin (running on each VM) polls this repo every 60 seconds and applies the new config automatically. No SSH bootstrap is ever needed — Comin is baked into the gallery image and starts on first boot.
 
 ## Branch Protection
 
@@ -103,31 +118,6 @@ Branch protection on `main` is strongly recommended to ensure all changes pass v
 >
 > See [`docs/comin-deployment.md`](docs/comin-deployment.md) for the full
 > architecture, secret rotation workflow, and status reporting details.
-
-NixOS host configurations live under `nixos/` using a **per-VM subfolder pattern** so that adding a new VM is as simple as adding a new folder under `hosts/`:
-
-```
-nixos/
-├── flake.nix               # Top-level flake with nixosConfigurations output
-├── flake.lock              # Populated by `nix flake update`
-├── hosts/
-│   └── gw1/
-│       ├── default.nix     # Host-specific config (hostname, networking, firewall)
-│       └── hardware.nix    # Azure Gen2 hardware config (NVMe+SCSI, boot loader, Hyper-V)
-├── modules/
-│   ├── base.nix            # Common: users, SSH authorized keys, Nix settings
-│   ├── comin.nix           # Comin GitOps service + status reporting callback
-│   ├── agenix.nix          # Agenix secret declarations
-│   ├── tailscale.nix       # Tailscale VPN module
-│   ├── networking.nix      # IP forwarding, routing (NVA role)
-│   └── monitoring.nix      # node_exporter for Azure Monitor
-└── secrets/
-    ├── secrets.nix         # Age public keys (recipients list)
-    ├── comin-github-token.age   # Encrypted GitHub PAT
-    └── tailscale-authkey.age    # Encrypted Tailscale auth key
-```
-
-Each host under `hosts/<vmname>/` is self-contained — `default.nix` imports the shared modules and adds host-specific overrides. Search for `# TODO` comments in the NixOS files for values you need to fill in (IP addresses, SSH keys, age keys, etc.).
 
 ## Getting Started
 
@@ -167,7 +157,6 @@ The script creates:
 - Entra ID (AAD) app registration (`<project>-github-oidc`)
 - Service principal with **Contributor** role on the subscription
 - Federated credentials for OIDC (main branch, pull requests, and `production` environment)
-- Resource groups for monitoring, networking, and compute
 
 At the end, it prints the values you need for the next step.
 
@@ -177,20 +166,16 @@ After running the bootstrap script, you must add the following **repository secr
 
 Go to **Settings → Secrets and variables → Actions → Secrets** (or use the `gh` CLI) and create:
 
-**Azure OIDC secrets** — used by `ci-pr`, `deploy-infra`, and `deploy-nixos` to authenticate to Azure:
+| Secret Name | Used by | Description |
+|---|---|---|
+| `AZURE_CLIENT_ID` | all Azure workflows | App registration client ID |
+| `AZURE_TENANT_ID` | all Azure workflows | Azure AD tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | all Azure workflows | Target subscription ID |
+| `ADMIN_SSH_PUBLIC_KEY` | `deploy-workload`, `ci-pr` | SSH public key injected into VM `authorized_keys` |
+| `GH_PAT` | `update-flake-lock`, `deploy-workload` | Fine-grained PAT (Contents + Pull requests + Commit statuses, R/W) |
+| `CI_SP_OBJECT_ID` | `landing-zone` | Object ID of CI service principal for Key Vault Secrets Officer. Get: `az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv` |
 
-| Secret Name              | Value                                      | Source                          |
-|--------------------------|--------------------------------------------|---------------------------------|
-| `AZURE_CLIENT_ID`       | Application (client) ID of the app registration | Printed by bootstrap script     |
-| `AZURE_TENANT_ID`       | Azure AD tenant ID                         | Printed by bootstrap script     |
-| `AZURE_SUBSCRIPTION_ID` | Target Azure subscription ID               | Printed by bootstrap script     |
-| `ADMIN_SSH_PUBLIC_KEY`   | Your SSH public key (e.g. contents of `~/.ssh/id_ed25519.pub`) | Your local machine |
-
-**GitHub PAT** — used by `update-flake-lock` so that the auto-generated PR triggers `ci-pr.yml` (a **fine-grained** token scoped to this repo is recommended — see [docs/secrets.md](docs/secrets.md) for full setup instructions):
-
-| Secret Name | Value                                   | Source          |
-|-------------|-----------------------------------------|-----------------|
-| `GH_PAT`    | Fine-grained Personal Access Token (Contents + Pull requests, R/W) | Your GitHub account — see [docs/secrets.md](docs/secrets.md) |
+See [docs/secrets.md](docs/secrets.md) for full setup instructions for each secret.
 
 Using the GitHub CLI:
 
@@ -200,30 +185,26 @@ gh secret set AZURE_TENANT_ID --body "<value from bootstrap output>"
 gh secret set AZURE_SUBSCRIPTION_ID --body "<value from bootstrap output>"
 gh secret set ADMIN_SSH_PUBLIC_KEY --body "$(cat ~/.ssh/id_ed25519.pub)"
 gh secret set GH_PAT --body "<your fine-grained PAT>"
+gh secret set CI_SP_OBJECT_ID --body "$(az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv)"
 ```
 
 > **Note:** The workflow also requires a GitHub **environment** named `production` for the deploy job. Create it under **Settings → Environments → New environment** and name it `production`. You can optionally add protection rules (e.g., required reviewers) to gate deployments.
 
 ### 3. Deploy Infrastructure
 
-Push to `main` branch or manually trigger the workflow:
+The deployment flow has three steps run in order:
 
-```bash
-git push origin main
-```
+1. **Run `landing-zone` workflow** (once, or whenever platform resources change) — deploys monitoring, VNET/NSGs, Compute Gallery, and Key Vault `kv-plaz-scus`.
 
-The GitHub Actions workflow (`deploy-infra`) will:
-1. Authenticate to Azure via OIDC (no long-lived secrets)
-2. Validate the Bicep templates
-3. Run `what-if` preview showing planned changes
-4. Deploy Bicep templates (only on push to `main` or manual dispatch)
+2. **Run `image-bake` workflow** — wait for a `blessed=true` gallery image version to appear. This may already have a blessed version if the schedule has run; otherwise trigger manually.
+
+3. **Run `deploy-workload`** — deploys gw1 from the newest `blessed=true` image. Injects the SSH host key via cloud-init `customData`. Comin starts on first boot and applies the full NixOS config automatically. No SSH bootstrap required.
 
 ## Configuration
 
-Key parameters are in `infra/environments/plaz.bicepparam`:
+Key parameters are split across two environment param files:
 
-- `location` — Azure region for all resources (checked-in environment/workflow target: `southcentralus`)
-- `projectName` — Project identifier used in naming (default: `plaz`)
-- `vmSize` — VM SKU (default: `Standard_D4ads_v7`)
-- `adminUsername` — VM admin user
-- `adminSshPublicKey` — SSH public key for VM access
+- `infra/environments/plaz-landing-zone.bicepparam` — platform resources (location, project name, networking CIDRs, Key Vault settings, CI SP object ID)
+- `infra/environments/plaz-workload.bicepparam` — compute resources (VM size, admin username, SSH key, image ID, cloud-init data)
+
+Both files use `readEnvironmentVariable()` for secrets and dynamic values that are injected by the workflows at deploy time.

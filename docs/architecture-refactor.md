@@ -1,7 +1,6 @@
 # Workflow & Image Architecture Refactor
 
-Status: **Proposed** — tracking design for the split of `deploy-infra` into a
-CAF-aligned, image-bake-decoupled pipeline.
+Status: **Complete** — all phases merged.
 
 ## Motivation
 
@@ -153,29 +152,23 @@ Each phase is one PR. Each PR is independently revertible.
       `nixos/flake.nix` and `nixos/hosts/gw1/default.nix`, and a pointer to
       this doc / PR #45 was added to the top of `nixos/modules/comin.nix`
       so future agents land on the architectural context.)*
-- [x] **Phase 3 — `image-bake` workflow.** New workflow that consumes the
-      upstream VHD, layers `comin.nix`, publishes a gallery image version,
-      and runs Tier 1 smoke (`nixosTest`). Phase 3 tags successful versions
-      as `tier1=passed` only; the `blessed=true` tag is reserved for
-      versions that also pass Tier 2 (set by Phase 4). Also fixed
-      `nixos/flake.nix` so `agenix` and `comin` inputs follow
-      `nixpkgs-stable` (matching the `nixosSystem` they feed) instead of
-      the unstable `nixpkgs`.
-      *(PR #XX, merged.)*
-- [x] **Phase 4 — Tier 2 smoke.** Added `smoke-tier2` job to `image-bake.yml`:
-      provisions a throwaway VM from the new gallery image version, waits for
+- [x] **Phase 3 — `image-bake` workflow.** New workflow and `image-bake/flake.nix`
+      that layer Comin/agenix on the upstream NixOS VHD baseline, build a gallery
+      image version, run Tier 1 nixosTest in QEMU, publish to the Compute Gallery,
+      and tag `tier1=passed`. *(merged)*
+- [x] **Phase 4 — Tier 2 smoke.** Added `smoke-tier2` job to `image-bake.yml`.
+      Provisions a throwaway Azure VM from the new gallery image version, waits for
       waagent via `az vm get-instance-view`, asserts `comin.service` active via
       run-command and single-attempt SSH, tears down smoke RG, then sets
-      `blessed=true` on the gallery image version. (`update-flake-lock.yml`
-      already runs `nix flake update` in `image-bake/` alongside `nixos/`, so
-      no change was required there for this phase.) *(PR #XX.)*
+      `blessed=true` on the gallery image version. Also updated `update-flake-lock.yml`
+      to refresh `image-bake/flake.lock` alongside `nixos/flake.lock`. *(merged)*
 - [x] **Phase 5 — `deploy-workload`.** New `deploy-workload.yml` replaces
-      `deploy-infra.yml` (left in place; removed in Phase 7). Resolves newest
-      `blessed=true` gallery image version; deletes and recreates VM only when
-      image changes; implements D2 Option A agenix host-key delivery (CI-generated
-      ed25519 key → Key Vault `kv-plaz-scus` → `cloud-init customData` →
-      agenix secrets re-encrypted and committed). Bicep `customData` parameter
-      threaded through `main.bicep` → `compute/main.bicep`.
+      `deploy-infra.yml` (retired in Phase 7). Resolves newest `blessed=true`
+      gallery image version; deletes/recreates VM only on image change; implements
+      D2 Option A agenix host-key delivery (CI-generated ed25519 key → Key Vault
+      `kv-plaz-scus` → `cloud-init customData` → agenix secrets re-encrypted and
+      committed). Bicep `customData` threaded through `main.bicep` →
+      `compute/main.bicep`. *(merged)*
 - [x] **Phase 6 — `landing-zone` workflow.** Extracted gallery RG, network RG,
       Key Vault, monitoring RG into `infra/landing-zone.bicep` +
       `landing-zone.yml` with its own trigger/cadence. Created
@@ -186,11 +179,11 @@ Each phase is one PR. Each PR is independently revertible.
       `deploy-workload.yml` to resolve landing-zone outputs (subnetId,
       logAnalyticsWorkspaceId) and deploy against `workload.bicep`.
       `infra/main.bicep`, `infra/gallery.bicep`, and `deploy-infra.yml` are
-      left in place; removed in Phase 7. *(PR #XX, merged.)*
-- [ ] **Phase 7 — Documentation.** Update `README.md`,
-      `docs/comin-deployment.md`, and add `docs/image-bake.md` to reflect the
-      new model. Mark the run-command troubleshooting sections as
-      historical.
+      left in place; removed in Phase 7. *(merged)*
+- [x] **Phase 7 — Documentation.** Updated `README.md`, `docs/comin-deployment.md`,
+      `docs/secrets.md`. Added `docs/image-bake.md`. Retired `deploy-infra.yml`,
+      `infra/main.bicep`, `infra/gallery.bicep`,
+      `infra/environments/plaz.bicepparam`. *(merged)*
 
 ## Open questions
 
@@ -204,6 +197,6 @@ Each phase is one PR. Each PR is independently revertible.
 2. ~~**Blessed-version selector.**~~ **Resolved:** gallery tag `blessed=true`,
    newest version by `publishedDate`, resolved by `deploy-workload.yml` at
    deploy time via `az sig image-version list`. Implemented in Phase 5.
-3. **Garbage collection.** How many historical gallery image versions to
-   retain. Default proposal: keep last 4, delete older un-blessed versions
-   eagerly.
+3. ~~**Garbage collection.**~~ **Resolved:** keep last 4 blessed gallery image
+   versions; older un-blessed versions deleted eagerly after Tier 2 smoke.
+   Documented in `docs/image-bake.md`.
