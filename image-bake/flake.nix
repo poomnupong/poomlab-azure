@@ -193,7 +193,7 @@
       # These end-to-end behaviours are validated by Tier 2 (Phase 4) on a
       # throwaway real-Azure VM. Only Tier 2 should set blessed=true.
       checks.${system} = {
-        smokeTest = pkgs.nixosTest {
+        smokeTest = pkgs.testers.nixosTest {
         name = "plaz-image-smoke";
 
         nodes.machine = { lib, ... }: {
