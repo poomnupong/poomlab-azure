@@ -73,8 +73,11 @@
         ../nixos/modules/agenix.nix
         ../nixos/modules/networking.nix
 
-        # Common settings (shared between bake and test)
-        { lib, ... }: {
+        # Common settings (shared between bake and test).
+        # Inline lambda modules must be parenthesized when placed in a list:
+        # without parens the Nix parser tries to read `{ lib, ... }` as an
+        # attribute-set literal and fails on the `,`.
+        ({ lib, ... }: {
           # stateVersion is a compat marker, not a channel version.
           # Use mkDefault so `core_pulse.nix`'s "24.11" wins for the bake while
           # this default applies to the smoke test (which does not import
@@ -85,7 +88,7 @@
           # In the bake context we pin to stable - version is not critical here;
           # Comin will update via nixos-rebuild from the runtime flake.
           _module.args.pkgs-unstable = pkgs;
-        }
+        })
       ];
 
       # Modules layered for the actual bake. Adds the upstream Azure
