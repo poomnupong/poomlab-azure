@@ -409,7 +409,18 @@ jobs:
           # Write the GitHub token into the VM at first boot via cloud-init.
           # nixosConfigurations.plaz-smoke reads from /etc/comin-smoke-token
           # (not agenix) so Comin can authenticate without a pre-encrypted secret.
-          CUSTOM_DATA=$(printf '#cloud-config\nwrite_files:\n  - path: /etc/comin-smoke-token\n    permissions: "0400"\n    owner: root:root\n    content: "%s"\n' "$GH_TOKEN" | base64 -w 0)
+          #
+          # Use cloud-init's `encoding: b64` for write_files so the token is
+          # carried as an opaque base64 blob inside the YAML — this avoids any
+          # YAML quoting hazard if the token ever contains `"`, `\`, newlines,
+          # or other characters that would otherwise break the inner string.
+          # Note: the raw user-data (post-decode) persists inside the VM at
+          # /var/lib/cloud/instances/*/user-data.txt for the lifetime of the
+          # VM. That is acceptable here because the smoke RG is destroyed at
+          # job end and we do not enable serial console screenshots or boot
+          # diagnostics retention on smoke RGs.
+          GH_TOKEN_B64=$(printf '%s' "$GH_TOKEN" | base64 -w 0)
+          CUSTOM_DATA=$(printf '#cloud-config\nwrite_files:\n  - path: /etc/comin-smoke-token\n    permissions: "0400"\n    owner: root:root\n    encoding: b64\n    content: %s\n' "$GH_TOKEN_B64" | base64 -w 0)
 
           # Standard_D4ads_v7 is an NVMe-only SKU (no SCSI controller for the
           # OS disk), so we must explicitly request the NVMe disk controller.
@@ -487,7 +498,7 @@ jobs:
                 set -euo pipefail
                 # Generation count in the system profile.
                 # Generation 1 = the baked image. Generation 2+ = Comin applied at least once.
-                gen_count=\$(nix-env --list-generations --profile /nix/var/nix/profiles/system 2>/dev/null | grep -c '[0-9]' || echo 0)
+                gen_count=\$(nix-env --list-generations --profile /nix/var/nix/profiles/system 2>/dev/null | grep -cE '^[[:space:]]*[0-9]+' || echo 0)
                 echo \"GENERATION_COUNT=\$gen_count\"
                 # Also emit current hostname to confirm plaz-smoke config is applied
                 echo \"HOSTNAME=\$(hostname)\"
