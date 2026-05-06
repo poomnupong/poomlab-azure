@@ -213,8 +213,14 @@
           machine.start()
           machine.wait_for_unit("multi-user.target")
 
-          # nix-ld must be configured (required for Azure VM extensions)
-          machine.succeed("systemctl is-active nix-ld.service")
+          # nix-ld must be configured (required for Azure VM extensions).
+          # programs.nix-ld does not create a systemd service; it sets
+          # environment.ldso (the system dynamic linker symlink) and exports
+          # NIX_LD / NIX_LD_LIBRARY_PATH. Verify both are in place.
+          machine.succeed("test -L /lib64/ld-linux-x86-64.so.2")
+          machine.succeed(
+              "test -e /run/current-system/sw/share/nix-ld/lib/ld.so"
+          )
 
           # comin systemd unit must be defined and loaded with the
           # repository URL we configured in nixos/modules/comin.nix.
