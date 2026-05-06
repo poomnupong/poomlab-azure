@@ -404,40 +404,20 @@ jobs:
             --location "${{ env.DEPLOYMENT_LOCATION }}" --output none
 
           PUBKEY=$(cat "$SSH_DIR/id.pub")
-          # Try a small list of equivalent 2-vCPU x86_64 SKUs in order so a
-          # transient SkuNotAvailable / capacity restriction on a single size
-          # in the target region doesn't fail Tier 2 smoke. The image is
-          # arch-agnostic on x86_64; both AMD (Da*) and Intel (Ds*) work.
-          SIZE_CANDIDATES=(
-            Standard_D2as_v5
-            Standard_D2s_v5
-            Standard_D2as_v4
-            Standard_D2s_v3
-          )
-          create_ok=0
-          for size in "${SIZE_CANDIDATES[@]}"; do
-            echo "::group::az vm create (size=$size)"
-            if az vm create \
-                --resource-group "$SMOKE_RG" \
-                --name "$VM_NAME" \
-                --image "$IMAGE_ID" \
-                --size "$size" \
-                --admin-username azureuser \
-                --ssh-key-value "$PUBKEY" \
-                --public-ip-sku Standard \
-                --output none; then
-              echo "vm created with size $size"
-              create_ok=1
-              echo "::endgroup::"
-              break
-            fi
-            echo "::warning::az vm create failed for size $size; trying next candidate"
-            echo "::endgroup::"
-          done
-          if [ "$create_ok" -ne 1 ]; then
-            echo "::error::az vm create failed for all candidate sizes: ${SIZE_CANDIDATES[*]}"
-            exit 1
-          fi
+          # Standard_D4ads_v7 is an NVMe-only SKU (no SCSI controller for the
+          # OS disk), so we must explicitly request the NVMe disk controller.
+          # The image definition already advertises "SCSI, NVMe" support via
+          # gallery.bicep (DiskControllerTypes feature).
+          az vm create \
+            --resource-group "$SMOKE_RG" \
+            --name "$VM_NAME" \
+            --image "$IMAGE_ID" \
+            --size Standard_D4ads_v7 \
+            --disk-controller-type NVMe \
+            --admin-username azureuser \
+            --ssh-key-value "$PUBKEY" \
+            --public-ip-sku Standard \
+            --output none
 
           VM_IP=$(az vm show -d \
             --resource-group "$SMOKE_RG" --name "$VM_NAME" \
