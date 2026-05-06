@@ -6,9 +6,11 @@
 # Pipeline:
 #   nix-installer -> nix build -> locate VHD -> gzip -> upload
 # We layer poomlab-azure modules on top of the upstream hardware baseline
-# before building. No build cache: each bake fetches/realises from scratch.
-# This trades ~20-25 min of wall-time for zero third-party cache dependency
-# and is acceptable given the monthly bake cadence.
+# before building. We do NOT use Magic Nix Cache or any other third-party
+# build cache; builds still pull from Nix's default substituters
+# (cache.nixos.org et al.), but every CI run starts with an empty local
+# /nix/store. This trades ~20-25 min of wall-time for zero third-party
+# cache dependency and is acceptable given the monthly bake cadence.
 #
 # Jobs:
 #   build   - nix build + Tier 1 nixosTest smoke (always, no Azure cost)
@@ -169,6 +171,12 @@ jobs:
             --query 'properties.outputs.imageDefinitionName.value' -o tsv) || {
             echo "::error::landing-zone deployment not found. Run the landing-zone workflow first."; exit 1;
           }
+          # `az ... -o tsv` exits 0 with empty output when the queried output
+          # is missing/null, so guard against that explicitly.
+          if [ -z "$GALLERY_NAME" ] || [ -z "$IMAGE_DEF" ]; then
+            echo "::error::Could not read galleryName/imageDefinitionName from landing-zone deployment outputs (got GALLERY_NAME='$GALLERY_NAME', IMAGE_DEF='$IMAGE_DEF'). Re-run the landing-zone workflow."
+            exit 1
+          fi
           az sig image-definition show \
             --resource-group "$GALLERY_RG" \
             --gallery-name "$GALLERY_NAME" \
