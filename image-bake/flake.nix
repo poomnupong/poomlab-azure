@@ -224,10 +224,16 @@
 
           # comin systemd unit must be defined and loaded with the
           # repository URL we configured in nixos/modules/comin.nix.
+          # In the pinned nlewo/comin revision, the NixOS module renders the
+          # remote URL into a YAML config file referenced from ExecStart as
+          # `--config /nix/store/...-comin-config.yaml`, so the URL is not in
+          # the unit file itself; follow the --config path and grep the YAML.
           machine.succeed("systemctl cat comin.service")
           machine.succeed(
-              "systemctl cat comin.service "
-              "| grep -q 'github.com/poomnupong/poomlab-azure'"
+              "comin_cfg=$(systemctl show -p ExecStart --value comin.service "
+              "| grep -oE '/nix/store/[^[:space:]\"]+\\.ya?ml' | head -n1) && "
+              "test -n \"$comin_cfg\" && "
+              "grep -q 'github.com/poomnupong/poomlab-azure' \"$comin_cfg\""
           )
 
           # IP forwarding must be enabled (NVA role, from networking.nix)
