@@ -487,6 +487,41 @@ jobs:
             exit 1
           } || true
 
+      - name: Write bootstrap token via run-command
+        # cloud-init's write_files directive is silently ignored on NixOS
+        # because the NixOS cloud-init module does not include the write-files
+        # module in its generated cloud.cfg. Bypass cloud-init entirely by
+        # writing the token directly via az vm run-command after waagent is
+        # ready. This is reliable and immediate regardless of image version.
+        # The image-bake/flake.nix fix (cloud_config_modules += write-files)
+        # makes cloud-init correct for future VMs; this step keeps the smoke
+        # test working right now on any already-published image version.
+        env:
+          SMOKE_RG: ${{ steps.provision.outputs.smoke_rg }}
+          VM_NAME:  ${{ steps.provision.outputs.vm_name }}
+          GH_PAT:   ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$GH_PAT"
+
+          # Base64-encode the token so it can be embedded safely in the
+          # single-quoted --scripts string without shell quoting issues
+          # (base64 output is always [A-Za-z0-9+/=], safe in single quotes).
+          ENCODED_TOKEN=$(printf '%s' "$GH_PAT" | base64 -w0)
+
+          az vm run-command invoke \
+            --resource-group "$SMOKE_RG" --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts "
+              export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:\$PATH
+              set -euo pipefail
+              printf '%s' '$ENCODED_TOKEN' | base64 -d | install -m 0400 /dev/stdin /etc/comin-bootstrap-token
+              systemctl reset-failed comin.service || true
+              systemctl restart comin.service
+              echo 'Bootstrap token written and comin restarted'
+            " \
+            --output json
+
       - name: Wait for Comin to complete first deployment
         env:
           SMOKE_RG: ${{ steps.provision.outputs.smoke_rg }}
@@ -512,6 +547,16 @@ jobs:
                 echo \"GENERATION_COUNT=\$gen_count\"
                 # Also emit current hostname to confirm plaz-smoke config is applied
                 echo \"HOSTNAME=\$(hostname)\"
+                # Detect permanent crash-loop — fail fast instead of polling 30 times.
+                # systemd stops restarting a service after too many rapid failures
+                # (StartLimitHit); at that point SubState=failed and is-failed=failed.
+                comin_state=\$(systemctl is-failed comin.service 2>/dev/null || true)
+                sub_state=\$(systemctl show -p SubState --value comin.service 2>/dev/null || echo 'unknown')
+                if [ \"\$comin_state\" = 'failed' ] && [ \"\$sub_state\" = 'failed' ]; then
+                  echo 'COMIN_STATE=crash-loop'
+                else
+                  echo 'COMIN_STATE=ok'
+                fi
                 # Emit comin journal tail for visibility
                 echo '=== comin journal ==='
                 journalctl -u comin --no-pager -n 20 2>/dev/null || true
@@ -521,6 +566,13 @@ jobs:
             echo "--- attempt $i ---"
             echo "$STDOUT"
             GEN=$(echo "$STDOUT" | grep -oP 'GENERATION_COUNT=\K[0-9]+' || echo "0")
+            COMIN_STATE=$(echo "$STDOUT" | grep -oP 'COMIN_STATE=\K\S+' || echo "ok")
+            # Detect permanent crash-loop and fail immediately rather than
+            # burning 30 poll rounds (~30 min) before giving up.
+            if [ "$COMIN_STATE" = "crash-loop" ]; then
+              echo "::error::comin.service is in a permanent crash-loop (StartLimitHit). Check the token file and comin config. Aborting early."
+              exit 1
+            fi
             if [ "${GEN:-0}" -ge 2 ]; then
               echo "✅ Comin applied successfully (generation count: $GEN)"
               echo "COMIN_DEPLOYED=true" >> "$GITHUB_ENV"

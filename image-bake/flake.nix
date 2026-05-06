@@ -147,6 +147,15 @@
           # tokenPath to "/run/agenix/comin-github-token" (agenix-managed);
           # the bootstrap file becomes inert.
           plaz.comin.tokenPath = "/etc/comin-bootstrap-token";
+
+          # ── cloud-init write_files fix ────────────────────────────────
+          # NixOS's cloud-init module generates a minimal cloud.cfg that
+          # does NOT include the write-files module by default, so a
+          # customData payload with a `write_files:` directive silently
+          # does nothing. Appending "write-files" to cloud_config_modules
+          # ensures any VM provisioned from this image (smoke or prod)
+          # will actually execute write_files on first boot.
+          services.cloud-init.settings.cloud_config_modules = lib.mkAfter [ "write-files" ];
         })
       ];
 
