@@ -426,12 +426,10 @@ jobs:
           	      ${GH_PAT}
           	CLOUDINIT
           )
-          CUSTOM_DATA_B64=$(printf '%s' "$CLOUD_INIT" | base64 -w 0)
-          echo "::add-mask::$CUSTOM_DATA_B64"
-
           # Write cloud-init to a temp file for --custom-data (az cli
           # expects a file path, not process substitution).
           CLOUD_INIT_FILE=$(mktemp)
+          trap 'rm -f "$CLOUD_INIT_FILE"' EXIT
           printf '%s' "$CLOUD_INIT" > "$CLOUD_INIT_FILE"
 
           # Standard_D4ads_v7 is an NVMe-only SKU (no SCSI controller for the
@@ -452,8 +450,6 @@ jobs:
             --computer-name plaz-smoke \
             --custom-data "$CLOUD_INIT_FILE" \
             --output none
-
-          rm -f "$CLOUD_INIT_FILE"
 
           VM_IP=$(az vm show -d \
             --resource-group "$SMOKE_RG" --name "$VM_NAME" \

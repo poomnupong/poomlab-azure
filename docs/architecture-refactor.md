@@ -231,7 +231,10 @@ any deployed configuration.
 The bootstrap token injection is always active (both workflows write the PAT
 via cloud-init). Switching the repo between public and private requires **no
 code changes** — the only prerequisite is that the `GH_PAT` repository secret
-has the correct scopes (`repo` for private; `public_repo` for public).
+has the correct permissions. For a fine-grained PAT (recommended): grant
+`Contents: Read` and `Commit statuses: Read and write` on this repository.
+For a classic PAT: the `repo` scope covers private repos; `public_repo`
+suffices for public repos.
 
 ## Open questions
 
