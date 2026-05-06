@@ -100,7 +100,9 @@ jobs:
       - name: Tier 1 smoke test (nixosTest in QEMU)
         run: |
           cd image-bake
-          nix build .#checks.x86_64-linux.smokeTest --print-build-logs
+          # Use a separate out-link so we don't clobber ./result (which points
+          # to the VHD output and is referenced by VHD_PATH from the locate step).
+          nix build .#checks.x86_64-linux.smokeTest --print-build-logs -o result-smoke
           echo "Tier 1 smoke test passed"
 
       - name: Compress VHD for upload
