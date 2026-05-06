@@ -533,7 +533,7 @@ jobs:
           # This preamble must be the first line of every run-command script.
           NIXOS_PATH_PREAMBLE='export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:$PATH'
 
-          echo "Polling for Comin to complete its first deployment (generation > 1)..."
+          echo "Polling for Comin to complete its first deployment (generation >= 1)..."
           for i in $(seq 1 30); do
             OUT=$(az vm run-command invoke \
               --resource-group "$SMOKE_RG" --name "$VM_NAME" \
@@ -541,9 +541,10 @@ jobs:
               --scripts "
                 $NIXOS_PATH_PREAMBLE
                 set -euo pipefail
-                # Generation count in the system profile.
-                # Generation 1 = the baked image. Generation 2+ = Comin applied at least once.
-                gen_count=\$(nix-env --list-generations --profile /nix/var/nix/profiles/system-profiles/comin 2>/dev/null | grep -cE '^[[:space:]]*[0-9]+' || echo 0)
+                # Generation count in the Comin-managed profile.
+                # Before any deployment: 0 entries. After first successful deploy: generation 1.
+                gen_count=\$(nix-env --list-generations --profile /nix/var/nix/profiles/system-profiles/comin 2>/dev/null | grep -cE '^[[:space:]]*[0-9]+' || true)
+                gen_count=\${gen_count:-0}
                 echo \"GENERATION_COUNT=\$gen_count\"
                 # Also emit current hostname to confirm plaz-smoke config is applied
                 echo \"HOSTNAME=\$(hostname)\"
