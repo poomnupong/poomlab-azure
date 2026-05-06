@@ -487,7 +487,7 @@ jobs:
                 set -euo pipefail
                 # Generation count in the system profile.
                 # Generation 1 = the baked image. Generation 2+ = Comin applied at least once.
-                gen_count=\$(nix-env --list-generations --profile /nix/var/nix/profiles/system 2>/dev/null | wc -l || echo 0)
+                gen_count=\$(nix-env --list-generations --profile /nix/var/nix/profiles/system 2>/dev/null | grep -c '[0-9]' || echo 0)
                 echo \"GENERATION_COUNT=\$gen_count\"
                 # Also emit current hostname to confirm plaz-smoke config is applied
                 echo \"HOSTNAME=\$(hostname)\"
