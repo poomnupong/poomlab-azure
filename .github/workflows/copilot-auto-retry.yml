@@ -1,0 +1,209 @@
+# Copilot Auto-Retry on CI Failure
+#
+# When a CI workflow fails on a Copilot-created branch (copilot/**), this
+# workflow automatically creates a new GitHub Issue assigned to Copilot that
+# contains the failure details and instructions to fix, closing the feedback
+# loop without human intervention.
+#
+# Guardrails:
+#   - Maximum 5 auto-retry issues per branch to prevent infinite loops.
+#   - Issues are labelled `copilot-auto-retry` for easy filtering.
+#   - Failure logs (last 200 lines) are embedded in the issue body.
+#
+# Watched workflows: all main CI workflows that run on pull-request / push.
+
+name: Copilot Auto-Retry on CI Failure
+
+on:
+  workflow_run:
+    workflows:
+      - "ci-pr"
+      - "image-bake"
+      - "landing-zone"
+      - "deploy-workload"
+    types: [completed]
+    branches:
+      - "copilot/**"
+
+permissions:
+  issues: write    # create and label issues
+  actions: read    # read workflow run logs
+  contents: read   # checkout (not strictly needed but good practice)
+
+jobs:
+  auto-retry:
+    # Double-check: only act on failures from Copilot branches.
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      startsWith(github.event.workflow_run.head_branch, 'copilot/')
+    runs-on: ubuntu-latest
+
+    steps:
+      # ----------------------------------------------------------------
+      # 1. Ensure the tracking label exists (idempotent).
+      # ----------------------------------------------------------------
+      - name: Ensure copilot-auto-retry label exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create "copilot-auto-retry" \
+            --repo "${{ github.repository }}" \
+            --description "Auto-created issue for Copilot CI failure retry" \
+            --color "e11d48" \
+            2>/dev/null || true
+
+      # ----------------------------------------------------------------
+      # 2. Count how many auto-retry issues already exist for this branch.
+      #    If we've hit the cap, print a warning and stop.
+      # ----------------------------------------------------------------
+      - name: Count existing retry issues for this branch
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          # Use exact matching against the title suffix " on `<branch>`" to avoid
+          # false positives when one branch name is a prefix of another (e.g.
+          # copilot/fix vs copilot/fix-v2). A backtick literal is stored in BT
+          # to avoid bash command-substitution of raw backticks.
+          BT='`'
+          SEARCH=" on ${BT}${BRANCH}${BT}"
+          COUNT=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label "copilot-auto-retry" \
+            --state all \
+            --limit 1000 \
+            --json title \
+            --jq '.[].title' | \
+            grep -cF "$SEARCH" || true)
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+          echo "Auto-retry issues for '${BRANCH}': ${COUNT}"
+          if [ "${COUNT}" -ge 5 ]; then
+            echo "::warning::Max retries (5) reached for '${BRANCH}'. No new issue will be created."
+          fi
+
+      # ----------------------------------------------------------------
+      # 3. Collect the failure logs for failed jobs (last 200 lines).
+      # ----------------------------------------------------------------
+      - name: Collect failure logs
+        if: fromJSON(steps.check.outputs.count) < 5
+        id: logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          LOGS=$(gh run view "${{ github.event.workflow_run.id }}" \
+            --repo "${{ github.repository }}" \
+            --log-failed 2>&1 | tail -200)
+          set -e
+          {
+            echo 'logs<<LOGEOF'
+            echo "$LOGS"
+            echo 'LOGEOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # ----------------------------------------------------------------
+      # 4. Find the open PR for this branch (may not exist for push runs).
+      # ----------------------------------------------------------------
+      - name: Find associated pull request
+        if: fromJSON(steps.check.outputs.count) < 5
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          PR_NUM=$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --head "$BRANCH" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+          echo "number=${PR_NUM}" >> "$GITHUB_OUTPUT"
+          if [ -n "$PR_NUM" ]; then
+            echo "Associated PR: #${PR_NUM}"
+          else
+            echo "No open PR found for branch '${BRANCH}'"
+          fi
+
+      # ----------------------------------------------------------------
+      # 5. Create the retry issue assigned to Copilot.
+      # ----------------------------------------------------------------
+      - name: Create retry issue
+        if: fromJSON(steps.check.outputs.count) < 5
+        uses: actions/github-script@v7
+        env:
+          FAILURE_LOGS: ${{ steps.logs.outputs.logs }}
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const branch = run.head_branch;
+            const retryNum = parseInt('${{ steps.check.outputs.count }}') + 1;
+            const prNum = '${{ steps.pr.outputs.number }}';
+            const logs = (process.env.FAILURE_LOGS || '(log collection unavailable)').trim();
+
+            const prLink  = prNum ? `- **Pull Request:** #${prNum}` : `- **Branch:** \`${branch}\``;
+            const fixTarget = prNum
+              ? `the branch for PR #${prNum} (\`${branch}\`)`
+              : `the \`${branch}\` branch`;
+
+            const title = `[Auto-Retry ${retryNum}/5] Fix CI failure: ${run.name} on \`${branch}\``;
+
+            const body = [
+              `## CI Failure — Auto-Retry Request (${retryNum}/5)`,
+              ``,
+              `A CI workflow failed on a Copilot-created branch. Please investigate the failure and push a fix.`,
+              ``,
+              `### Failure Details`,
+              `- **Workflow:** ${run.name}`,
+              `- **Run:** [#${run.run_number}](${run.html_url})`,
+              prLink,
+              `- **Attempt:** ${retryNum} of 5`,
+              ``,
+              `### Failure Logs`,
+              ``,
+              `<details>`,
+              `<summary>Expand to see failure logs (last 200 lines)</summary>`,
+              ``,
+              `\`\`\``,
+              logs,
+              `\`\`\``,
+              ``,
+              `</details>`,
+              ``,
+              `### Instructions`,
+              ``,
+              `1. Read the failure logs above and open the [CI run](${run.html_url}) for full context.`,
+              `2. Identify the root cause of the failure.`,
+              `3. Fix the issue in ${fixTarget}.`,
+              `4. Push the fix and verify that CI passes before closing this issue.`,
+              ``,
+              `> _This issue was automatically generated by the \`copilot-auto-retry\` workflow._`,
+              `> _If the root cause cannot be fixed autonomously, please escalate to a human reviewer._`,
+            ].join('\n');
+
+            try {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['copilot-auto-retry'],
+                // 'copilot' is the GitHub bot account for the Copilot coding agent.
+                // Assignment succeeds when the Copilot app is enabled on the repository.
+                assignees: ['copilot'],
+              });
+              core.info(`Created retry issue: ${title}`);
+            } catch (err) {
+              // Fall back to creating without an assignee (e.g. Copilot app not installed,
+              // or the 'copilot' user is not a valid assignee for this repo).
+              // The `copilot-auto-retry` label and issue title still make it easy to find.
+              core.warning(`Could not assign issue to Copilot (${err.message}); creating unassigned.`);
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['copilot-auto-retry'],
+              });
+              core.info(`Created retry issue (unassigned): ${title}`);
+            }
