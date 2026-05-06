@@ -543,7 +543,7 @@ jobs:
                 set -euo pipefail
                 # Generation count in the system profile.
                 # Generation 1 = the baked image. Generation 2+ = Comin applied at least once.
-                gen_count=\$(nix-env --list-generations --profile /nix/var/nix/profiles/system 2>/dev/null | grep -cE '^[[:space:]]*[0-9]+' || echo 0)
+                gen_count=\$(nix-env --list-generations --profile /nix/var/nix/profiles/system-profiles/comin 2>/dev/null | grep -cE '^[[:space:]]*[0-9]+' || echo 0)
                 echo \"GENERATION_COUNT=\$gen_count\"
                 # Also emit current hostname to confirm plaz-smoke config is applied
                 echo \"HOSTNAME=\$(hostname)\"
@@ -573,7 +573,7 @@ jobs:
               echo "::error::comin.service is in a permanent crash-loop (StartLimitHit). Check the token file and comin config. Aborting early."
               exit 1
             fi
-            if [ "${GEN:-0}" -ge 2 ]; then
+            if [ "${GEN:-0}" -ge 1 ]; then
               echo "✅ Comin applied successfully (generation count: $GEN)"
               echo "COMIN_DEPLOYED=true" >> "$GITHUB_ENV"
               break
