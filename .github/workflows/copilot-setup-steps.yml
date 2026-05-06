@@ -1,0 +1,68 @@
+# Copilot Setup Steps
+#
+# Runs before Copilot starts working on a task. Installs Nix so the agent can
+# run `nix flake check` as a pre-flight validation before opening a PR, catching
+# multiple errors per attempt instead of one at a time.
+#
+# See: https://docs.github.com/en/copilot/customizing-copilot/customizing-the-development-environment-for-copilot-coding-agent
+
+name: "Copilot Setup Steps"
+
+# Allow manual validation and auto-run when the file itself changes.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # This job MUST be named `copilot-setup-steps` to be picked up by the agent.
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read  # required to clone the repository
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Install Nix with flakes and nix-command enabled (consistent with image-bake.yml).
+      # Determinate Systems installer enables experimental features by default.
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+
+      # Warm the Nix binary cache so subsequent nix invocations are faster.
+      # continue-on-error so a cache-server outage never blocks the agent.
+      - name: Enable Magic Nix Cache
+        continue-on-error: true
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      # Pre-flight: evaluate all NixOS host configs. This is a pure eval —
+      # no builds, no QEMU — so it completes in seconds and surfaces syntax
+      # and option-type errors before the agent opens a PR.
+      # continue-on-error so the agent still starts even if the flake is broken;
+      # the output remains visible in the session logs for the agent to read.
+      # set -eo pipefail ensures a non-zero exit from nix is propagated correctly;
+      # without it the final echo would mask the failure exit code.
+      - name: Pre-flight — validate nixos flake
+        continue-on-error: true
+        run: |
+          set -eo pipefail
+          echo "=== nix flake check (nixos/) ==="
+          cd nixos
+          nix flake check --no-update-lock-file . 2>&1
+
+      # Pre-flight: evaluate the image-bake flake inputs. Skips the smokeTest
+      # build (too long for a setup step) but catches flake.nix parse/eval errors.
+      - name: Pre-flight — validate image-bake flake inputs
+        continue-on-error: true
+        run: |
+          set -eo pipefail
+          echo "=== nix flake show (image-bake/) ==="
+          cd image-bake
+          nix flake show --no-update-lock-file . 2>&1
