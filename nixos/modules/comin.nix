@@ -45,7 +45,7 @@ let
     set -euo pipefail
 
     REPO="poomnupong/poomlab-azure"
-    TOKEN_FILE="${if cfg.tokenPath != null then cfg.tokenPath else ""}"
+    TOKEN_FILE="${lib.optionalString (cfg.tokenPath != null) cfg.tokenPath}"
 
     if [ -z "$TOKEN_FILE" ] || [ ! -f "$TOKEN_FILE" ]; then
       echo "comin-report-status: no token configured or file missing, skipping."
