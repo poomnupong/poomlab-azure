@@ -51,5 +51,12 @@
     allowedTCPPorts = [ 22 ];
   };
 
+  # ── Comin token ─────────────────────────────────────────────────────
+  # Use the agenix-managed GitHub PAT for Comin authentication.
+  # After the first Comin apply, agenix decrypts the secret from the .age
+  # file using the VM's SSH host key (injected at provisioning time via
+  # cloud-init customData by deploy-workload).
+  plaz.comin.tokenPath = "/run/agenix/comin-github-token";
+
   system.stateVersion = "25.11";
 }

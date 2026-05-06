@@ -12,10 +12,23 @@
 { ... }:
 
 {
+  # ── Hostname ────────────────────────────────────────────────────────
+  # Must match --computer-name plaz-smoke used in image-bake.yml smoke-tier2.
+  networking.hostName = "plaz-smoke";
+
   networking.firewall = {
     enable = true;
     allowedTCPPorts = [ 22 ];
   };
+
+  # ── Comin bootstrap token ───────────────────────────────────────────
+  # Use the same bootstrap token path as the baked image (gen 1).
+  # Cloud-init delivers the PAT to /etc/comin-bootstrap-token at VM
+  # creation time. After gen 2 applies this config, Comin restarts and
+  # continues to authenticate with the same file — which is important
+  # when the repo is private, since anonymous fetch would fail.
+  # For public repos the token is optional but harmless.
+  plaz.comin.tokenPath = "/etc/comin-bootstrap-token";
 
   # ── Azure Linux Agent (waagent) ──────────────────────────────────────
   # Mirrors hosts/gw1/hardware.nix:58-63. The baked image ships with

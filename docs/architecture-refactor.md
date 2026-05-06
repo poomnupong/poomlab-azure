@@ -185,6 +185,57 @@ Each phase is one PR. Each PR is independently revertible.
       `infra/main.bicep`, `infra/gallery.bicep`,
       `infra/environments/plaz.bicepparam`. *(merged)*
 
+## Private repo support
+
+### The problem
+
+When the repo is private, Comin needs a GitHub PAT to fetch the config, but
+the config is what configures the PAT path. Classic chicken-and-egg.
+
+### The solution — `plaz.comin.tokenPath` three-state lifecycle
+
+The `plaz.comin.tokenPath` NixOS option (declared in `nixos/modules/comin.nix`)
+controls whether and where Comin reads its GitHub authentication token:
+
+| State | `tokenPath` value | When |
+|---|---|---|
+| Baked image | `"/etc/comin-bootstrap-token"` | Written by cloud-init at VM creation; works for both public and private repos |
+| Production steady-state | `"/run/agenix/comin-github-token"` | After first Comin apply, agenix-managed |
+| Smoke VM (gen 2+) | `"/etc/comin-bootstrap-token"` | Same bootstrap token persists; VM is ephemeral |
+
+When `tokenPath` is non-null it is set as `auth.access_token_path` in the
+Comin remote config. Setting `null` omits the `auth` block entirely (anonymous
+fetch) — this is only used as the option's default and is not actively set in
+any deployed configuration.
+
+### The bootstrap flow
+
+1. `deploy-workload` adds the GitHub PAT to the existing `cloud-init customData`
+   payload alongside the SSH host key (already present from Phase 5 Option A).
+   Writes it to `/etc/comin-bootstrap-token`.
+   `image-bake.yml` smoke-tier2 does the same for the ephemeral smoke VM.
+2. The baked image config in `image-bake/flake.nix` sets
+   `plaz.comin.tokenPath = "/etc/comin-bootstrap-token"`.
+3. VM boots → cloud-init writes both SSH host key and bootstrap token → Comin
+   starts → authenticates with bootstrap token → fetches flake → applies
+   runtime `nixosConfiguration.<hostname>` which sets
+   `plaz.comin.tokenPath = "/run/agenix/comin-github-token"` → agenix
+   activates using the now-present host key → gen 2 onward uses the
+   agenix-managed token.
+4. The bootstrap token at `/etc/comin-bootstrap-token` becomes inert after
+   gen 1 on production hosts. On smoke VMs it stays active through gen 2
+   (the `plaz-smoke` host config keeps the same path).
+
+### Public ↔ private switching cost
+
+The bootstrap token injection is always active (both workflows write the PAT
+via cloud-init). Switching the repo between public and private requires **no
+code changes** — the only prerequisite is that the `GH_PAT` repository secret
+has the correct permissions. For a fine-grained PAT (recommended): grant
+`Contents: Read` and `Commit statuses: Read and write` on this repository.
+For a classic PAT: the `repo` scope covers private repos; `public_repo`
+suffices for public repos.
+
 ## Open questions
 
 1. ~~**Agenix host key delivery (D2 A vs B).**~~ **Resolved: Option A.**

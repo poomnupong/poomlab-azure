@@ -370,9 +370,10 @@ jobs:
         env:
           GALLERY_VERSION: ${{ needs.publish.outputs.gallery_version }}
           SSH_DIR:         ${{ steps.ssh.outputs.dir }}
-          GH_TOKEN:        ${{ github.token }}
+          GH_PAT:          ${{ secrets.GH_PAT }}
         run: |
           set -euo pipefail
+          echo "::add-mask::$GH_PAT"
 
           # Per-run RG name so concurrent / retried runs cannot collide and
           # async (--no-wait) teardown of one run cannot race a fresh run.
@@ -406,21 +407,30 @@ jobs:
 
           PUBKEY=$(cat "$SSH_DIR/id.pub")
 
-          # Write the GitHub token into the VM at first boot via cloud-init.
-          # nixosConfigurations.plaz-smoke reads from /etc/comin-smoke-token
-          # (not agenix) so Comin can authenticate without a pre-encrypted secret.
+          # ── Build cloud-init customData ────────────────────────────────
+          # Write the GitHub PAT to /etc/comin-bootstrap-token so Comin
+          # can authenticate on first boot. This works for both public and
+          # private repos: public repos accept authenticated requests
+          # (avoids rate-limit), private repos require them.
           #
-          # Use cloud-init's `encoding: b64` for write_files so the token is
-          # carried as an opaque base64 blob inside the YAML — this avoids any
-          # YAML quoting hazard if the token ever contains `"`, `\`, newlines,
-          # or other characters that would otherwise break the inner string.
-          # Note: the raw user-data (post-decode) persists inside the VM at
-          # /var/lib/cloud/instances/*/user-data.txt for the lifetime of the
-          # VM. That is acceptable here because the smoke RG is destroyed at
-          # job end and we do not enable serial console screenshots or boot
-          # diagnostics retention on smoke RGs.
-          GH_TOKEN_B64=$(printf '%s' "$GH_TOKEN" | base64 -w 0)
-          CUSTOM_DATA=$(printf '#cloud-config\nwrite_files:\n  - path: /etc/comin-smoke-token\n    permissions: "0400"\n    owner: root:root\n    encoding: b64\n    content: %s\n' "$GH_TOKEN_B64" | base64 -w 0)
+          # NB: heredoc body uses "<10 spaces><tab><content>" pattern.
+          # The spaces satisfy this `run: |` YAML block scalar's indent;
+          # the tab is stripped by `<<-CLOUDINIT` (POSIX <<- strips tabs).
+          CLOUD_INIT=$(cat <<-CLOUDINIT
+          	#cloud-config
+          	write_files:
+          	  - path: /etc/comin-bootstrap-token
+          	    permissions: '0400'
+          	    owner: root:root
+          	    content: |
+          	      ${GH_PAT}
+          	CLOUDINIT
+          )
+          # Write cloud-init to a temp file for --custom-data (az cli
+          # expects a file path, not process substitution).
+          CLOUD_INIT_FILE=$(mktemp)
+          trap 'rm -f "$CLOUD_INIT_FILE"' EXIT
+          printf '%s' "$CLOUD_INIT" > "$CLOUD_INIT_FILE"
 
           # Standard_D4ads_v7 is an NVMe-only SKU (no SCSI controller for the
           # OS disk), so we must explicitly request the NVMe disk controller.
@@ -437,8 +447,8 @@ jobs:
             --admin-username azureuser \
             --ssh-key-value "$PUBKEY" \
             --public-ip-sku Standard \
-            --custom-data "$CUSTOM_DATA" \
             --computer-name plaz-smoke \
+            --custom-data "$CLOUD_INIT_FILE" \
             --output none
 
           VM_IP=$(az vm show -d \

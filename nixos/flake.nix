@@ -105,41 +105,17 @@
         specialArgs = { inherit pkgs-unstable; };
         modules = [
           comin.nixosModules.comin
+          ./modules/comin.nix
           agenix.nixosModules.default
           ./modules/base.nix
           ./modules/networking.nix
           ./hosts/plaz-smoke/default.nix
           ./hosts/plaz-smoke/hardware.nix
           {
-            networking.hostName = "plaz-smoke";
-
-            # No agenix secrets — smoke VM uses a directly injected token file
-            # (we cannot pre-encrypt for an ephemeral host key we don't know yet).
+            # plaz.comin.tokenPath = "/etc/comin-bootstrap-token" is set in
+            # hosts/plaz-smoke/default.nix; cloud-init delivers the PAT at
+            # VM creation time. Works for both public and private repos.
             age.secrets = lib.mkForce {};
-
-            # Comin config: same repo/branch as production, but:
-            #   - auth.access_token_path points to a cloud-init-written file
-            #     (not an agenix-managed path, since age.secrets is empty)
-            #   - faster poll period so the smoke gate finishes in time
-            #   - postDeploymentCommand omitted (no token for GitHub status API)
-            services.comin = {
-              enable = true;
-              repositorySubdir = "nixos";
-              remotes = [
-                {
-                  name   = "origin";
-                  url    = "https://github.com/poomnupong/poomlab-azure.git";
-                  branches.main.name = "main";
-                  poller.period = 30;
-                  auth.access_token_path = "/etc/comin-smoke-token";
-                }
-              ];
-              exporter = {
-                listen_address = "127.0.0.1";
-                port = 4243;
-              };
-            };
-
             system.stateVersion = "25.11";
           }
         ];
