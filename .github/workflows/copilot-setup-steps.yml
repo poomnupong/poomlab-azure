@@ -47,20 +47,22 @@ jobs:
       # and option-type errors before the agent opens a PR.
       # continue-on-error so the agent still starts even if the flake is broken;
       # the output remains visible in the session logs for the agent to read.
+      # set -eo pipefail ensures a non-zero exit from nix is propagated correctly;
+      # without it the final echo would mask the failure exit code.
       - name: Pre-flight — validate nixos flake
         continue-on-error: true
         run: |
+          set -eo pipefail
           echo "=== nix flake check (nixos/) ==="
           cd nixos
           nix flake check --no-update-lock-file . 2>&1
-          echo "=== nixos pre-flight complete ==="
 
       # Pre-flight: evaluate the image-bake flake inputs. Skips the smokeTest
       # build (too long for a setup step) but catches flake.nix parse/eval errors.
       - name: Pre-flight — validate image-bake flake inputs
         continue-on-error: true
         run: |
+          set -eo pipefail
           echo "=== nix flake show (image-bake/) ==="
           cd image-bake
           nix flake show --no-update-lock-file . 2>&1
-          echo "=== image-bake pre-flight complete ==="

@@ -1,16 +1,22 @@
 # Copilot Auto-Retry on CI Failure
 #
-# When a CI workflow fails on a Copilot-created branch (copilot/**), this
-# workflow automatically creates a new GitHub Issue assigned to Copilot that
-# contains the failure details and instructions to fix, closing the feedback
-# loop without human intervention.
+# When a CI workflow fails on a Copilot-created branch (copilot/**), or on main
+# for post-merge workflows (landing-zone, deploy-workload), this workflow
+# automatically creates a new GitHub Issue assigned to Copilot that contains the
+# failure details and instructions to fix, closing the feedback loop without
+# human intervention.
 #
 # Guardrails:
 #   - Maximum 5 auto-retry issues per branch to prevent infinite loops.
 #   - Issues are labelled `copilot-auto-retry` for easy filtering.
-#   - Failure logs (last 200 lines) are embedded in the issue body.
+#   - Failure logs (last 200 lines) and failed job names are embedded in the body.
+#   - Concurrency group per branch serializes concurrent failure events to avoid
+#     duplicate issues from two simultaneous failures on the same branch.
+#   - Restricted to same-repository runs to prevent fork-branch abuse.
 #
-# Watched workflows: all main CI workflows that run on pull-request / push.
+# Watched workflows:
+#   ci-pr, image-bake      — run on PR branches (copilot/**)
+#   landing-zone, deploy-workload — run on main after merge
 
 name: Copilot Auto-Retry on CI Failure
 
@@ -22,20 +28,35 @@ on:
       - "landing-zone"
       - "deploy-workload"
     types: [completed]
-    branches:
-      - "copilot/**"
+    # No branches filter here — filtering is done in the job condition so that:
+    #   - ci-pr / image-bake  → copilot/** branches (PR context)
+    #   - landing-zone / deploy-workload → main branch (post-merge context)
 
 permissions:
   issues: write    # create and label issues
   actions: read    # read workflow run logs
-  contents: read   # checkout (not strictly needed but good practice)
+  contents: read
+
+# Serialize per-branch so that two simultaneous failure events don't both
+# read count=0 and each create a duplicate "[Auto-Retry 1/5]" issue.
+concurrency:
+  group: copilot-auto-retry-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false   # queue, never cancel
 
 jobs:
   auto-retry:
-    # Double-check: only act on failures from Copilot branches.
+    # Only act on failures from:
+    #   - copilot/** branches (Copilot PR work), OR
+    #   - main branch (post-merge failures for landing-zone / deploy-workload)
+    # AND only from the same repository — not from fork PRs whose branch
+    # happens to be named copilot/... (fork runs have a different repo id).
     if: |
       github.event.workflow_run.conclusion == 'failure' &&
-      startsWith(github.event.workflow_run.head_branch, 'copilot/')
+      github.event.workflow_run.head_repository_id == github.repository_id &&
+      (
+        startsWith(github.event.workflow_run.head_branch, 'copilot/') ||
+        github.event.workflow_run.head_branch == 'main'
+      )
     runs-on: ubuntu-latest
 
     steps:
@@ -68,14 +89,23 @@ jobs:
           # to avoid bash command-substitution of raw backticks.
           BT='`'
           SEARCH=" on ${BT}${BRANCH}${BT}"
-          COUNT=$(gh issue list \
+          # --limit 1000 so count is accurate even if many issues exist.
+          # Use `|| echo "0"` so COUNT is never empty if gh fails;
+          # then validate it's a plain integer and default to 0 if not.
+          RAW=$(gh issue list \
             --repo "${{ github.repository }}" \
             --label "copilot-auto-retry" \
             --state all \
             --limit 1000 \
             --json title \
-            --jq '.[].title' | \
-            grep -cF "$SEARCH" || true)
+            --jq '.[].title' 2>/dev/null | \
+            grep -cF "$SEARCH" || echo "0")
+          if [[ "${RAW}" =~ ^[0-9]+$ ]]; then
+            COUNT="${RAW}"
+          else
+            echo "::warning::Could not fetch retry count (got '${RAW}'); defaulting to 0"
+            COUNT=0
+          fi
           echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
           echo "Auto-retry issues for '${BRANCH}': ${COUNT}"
           if [ "${COUNT}" -ge 5 ]; then
@@ -83,7 +113,8 @@ jobs:
           fi
 
       # ----------------------------------------------------------------
-      # 3. Collect the failure logs for failed jobs (last 200 lines).
+      # 3. Collect failure logs (last 200 lines) with a safe random delimiter
+      #    so a line "LOGEOF" in log output can never truncate the value.
       # ----------------------------------------------------------------
       - name: Collect failure logs
         if: fromJSON(steps.check.outputs.count) < 5
@@ -96,10 +127,12 @@ jobs:
             --repo "${{ github.repository }}" \
             --log-failed 2>&1 | tail -200)
           set -e
+          # Use a random hex boundary that cannot appear in log output.
+          DELIMITER="LOGS_$(openssl rand -hex 16)"
           {
-            echo 'logs<<LOGEOF'
+            echo "logs<<${DELIMITER}"
             echo "$LOGS"
-            echo 'LOGEOF'
+            echo "${DELIMITER}"
           } >> "$GITHUB_OUTPUT"
 
       # ----------------------------------------------------------------
@@ -127,6 +160,8 @@ jobs:
 
       # ----------------------------------------------------------------
       # 5. Create the retry issue assigned to Copilot.
+      #    Uses the Jobs API to list which specific jobs failed so the agent
+      #    doesn't have to open the run manually to find the failure point.
       # ----------------------------------------------------------------
       - name: Create retry issue
         if: fromJSON(steps.check.outputs.count) < 5
@@ -141,6 +176,28 @@ jobs:
             const prNum = '${{ steps.pr.outputs.number }}';
             const logs = (process.env.FAILURE_LOGS || '(log collection unavailable)').trim();
 
+            // Fetch the individual jobs for this run and identify which failed.
+            let failedJobLines = '(could not retrieve job details)';
+            try {
+              const jobsResp = await github.rest.actions.listJobsForWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                filter: 'latest',
+                per_page: 100,
+              });
+              const failedJobs = jobsResp.data.jobs.filter(j => j.conclusion === 'failure');
+              if (failedJobs.length > 0) {
+                failedJobLines = failedJobs
+                  .map(j => `- **${j.name}** — [View logs](${j.html_url})`)
+                  .join('\n');
+              } else {
+                failedJobLines = '(no individual jobs marked as failed — check the run link)';
+              }
+            } catch (err) {
+              core.warning(`Could not fetch jobs for run ${run.id}: ${err.message}`);
+            }
+
             const prLink  = prNum ? `- **Pull Request:** #${prNum}` : `- **Branch:** \`${branch}\``;
             const fixTarget = prNum
               ? `the branch for PR #${prNum} (\`${branch}\`)`
@@ -151,13 +208,17 @@ jobs:
             const body = [
               `## CI Failure — Auto-Retry Request (${retryNum}/5)`,
               ``,
-              `A CI workflow failed on a Copilot-created branch. Please investigate the failure and push a fix.`,
+              `A CI workflow failed. Please investigate the failure and push a fix.`,
               ``,
               `### Failure Details`,
               `- **Workflow:** ${run.name}`,
               `- **Run:** [#${run.run_number}](${run.html_url})`,
               prLink,
               `- **Attempt:** ${retryNum} of 5`,
+              ``,
+              `### Failed Jobs`,
+              ``,
+              failedJobLines,
               ``,
               `### Failure Logs`,
               ``,
@@ -172,8 +233,8 @@ jobs:
               ``,
               `### Instructions`,
               ``,
-              `1. Read the failure logs above and open the [CI run](${run.html_url}) for full context.`,
-              `2. Identify the root cause of the failure.`,
+              `1. Review the **Failed Jobs** links above for the specific job output.`,
+              `2. Expand the failure logs for additional context.`,
               `3. Fix the issue in ${fixTarget}.`,
               `4. Push the fix and verify that CI passes before closing this issue.`,
               ``,
