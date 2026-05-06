@@ -404,11 +404,16 @@ jobs:
             --location "${{ env.DEPLOYMENT_LOCATION }}" --output none
 
           PUBKEY=$(cat "$SSH_DIR/id.pub")
+          # Standard_D4ads_v7 is an NVMe-only SKU (no SCSI controller for the
+          # OS disk), so we must explicitly request the NVMe disk controller.
+          # The image definition already advertises "SCSI, NVMe" support via
+          # infra/modules/gallery/main.bicep (DiskControllerTypes feature).
           az vm create \
             --resource-group "$SMOKE_RG" \
             --name "$VM_NAME" \
             --image "$IMAGE_ID" \
-            --size Standard_D2as_v5 \
+            --size Standard_D4ads_v7 \
+            --disk-controller-type NVMe \
             --admin-username azureuser \
             --ssh-key-value "$PUBKEY" \
             --public-ip-sku Standard \
