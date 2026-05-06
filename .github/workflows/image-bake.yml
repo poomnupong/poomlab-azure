@@ -3,10 +3,14 @@
 # Phase 3 of the workflow/image architecture refactor.
 # See docs/architecture-refactor.md for design decisions D1-D5.
 #
-# Pattern mirrors nixos-azimage-builder/weekly_forge.yml:
-#   nix-installer -> magic-nix-cache -> nix build -> locate VHD -> gzip -> upload
-# The difference: we layer poomlab-azure modules on top of the upstream
-# hardware baseline before building.
+# Pipeline:
+#   nix-installer -> nix build -> locate VHD -> gzip -> upload
+# We layer poomlab-azure modules on top of the upstream hardware baseline
+# before building. We do NOT use Magic Nix Cache or any other third-party
+# build cache; builds still pull from Nix's default substituters
+# (cache.nixos.org et al.), but every CI run starts with an empty local
+# /nix/store. This trades ~20-25 min of wall-time for zero third-party
+# cache dependency and is acceptable given the monthly bake cadence.
 #
 # Jobs:
 #   build   - nix build + Tier 1 nixosTest smoke (always, no Azure cost)
@@ -68,9 +72,6 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v14
-
-      - name: Enable Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v8
 
       - name: Generate image version string
         id: version
@@ -153,19 +154,35 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify Gallery exists
-        # The gallery is managed by landing-zone.yml. If the gallery RG or
-        # image definition does not exist, the user must run landing-zone first.
+        # The gallery is managed by landing-zone.yml. Read the actual gallery
+        # and image-definition names from the landing-zone deployment outputs
+        # rather than hard-coding (the bicep names them gal_<project> /
+        # nixos-azimage). If either is missing the user must run landing-zone.
         run: |
           set -euxo pipefail
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
-          GALLERY_NAME="gal${{ env.PROJECT_NAME }}"
-          IMAGE_DEF="nixos-azure-base"
+          GALLERY_NAME=$(az deployment sub show \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.galleryName.value' -o tsv) || {
+            echo "::error::landing-zone deployment not found. Run the landing-zone workflow first."; exit 1;
+          }
+          IMAGE_DEF=$(az deployment sub show \
+            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --query 'properties.outputs.imageDefinitionName.value' -o tsv) || {
+            echo "::error::landing-zone deployment not found. Run the landing-zone workflow first."; exit 1;
+          }
+          # `az ... -o tsv` exits 0 with empty output when the queried output
+          # is missing/null, so guard against that explicitly.
+          if [ -z "$GALLERY_NAME" ] || [ -z "$IMAGE_DEF" ]; then
+            echo "::error::Could not read galleryName/imageDefinitionName from landing-zone deployment outputs (got GALLERY_NAME='$GALLERY_NAME', IMAGE_DEF='$IMAGE_DEF'). Re-run the landing-zone workflow."
+            exit 1
+          fi
           az sig image-definition show \
             --resource-group "$GALLERY_RG" \
             --gallery-name "$GALLERY_NAME" \
             --gallery-image-definition "$IMAGE_DEF" \
             -o none \
-          || { echo "::error::Gallery image definition not found. Run the landing-zone workflow first."; exit 1; }
+          || { echo "::error::Gallery image definition '$IMAGE_DEF' not found in $GALLERY_RG/$GALLERY_NAME. Run the landing-zone workflow first."; exit 1; }
 
       - name: Download VHD artifact
         uses: actions/download-artifact@v4.3.0
