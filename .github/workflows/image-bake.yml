@@ -341,7 +341,7 @@ jobs:
     needs: publish
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     environment: production
 
     steps:
@@ -370,6 +370,7 @@ jobs:
         env:
           GALLERY_VERSION: ${{ needs.publish.outputs.gallery_version }}
           SSH_DIR:         ${{ steps.ssh.outputs.dir }}
+          GH_TOKEN:        ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -404,10 +405,18 @@ jobs:
             --location "${{ env.DEPLOYMENT_LOCATION }}" --output none
 
           PUBKEY=$(cat "$SSH_DIR/id.pub")
+
+          # Write the GitHub token into the VM at first boot via cloud-init.
+          # nixosConfigurations.plaz-smoke reads from /etc/comin-smoke-token
+          # (not agenix) so Comin can authenticate without a pre-encrypted secret.
+          CUSTOM_DATA=$(printf '#cloud-config\nwrite_files:\n  - path: /etc/comin-smoke-token\n    permissions: "0400"\n    owner: root:root\n    content: "%s"\n' "$GH_TOKEN" | base64 -w 0)
+
           # Standard_D4ads_v7 is an NVMe-only SKU (no SCSI controller for the
           # OS disk), so we must explicitly request the NVMe disk controller.
           # The image definition already advertises "SCSI, NVMe" support via
           # infra/modules/gallery/main.bicep (DiskControllerTypes feature).
+          # --computer-name plaz-smoke matches nixosConfigurations.plaz-smoke
+          # so Comin can find the correct configuration to apply.
           az vm create \
             --resource-group "$SMOKE_RG" \
             --name "$VM_NAME" \
@@ -417,6 +426,8 @@ jobs:
             --admin-username azureuser \
             --ssh-key-value "$PUBKEY" \
             --public-ip-sku Standard \
+            --custom-data "$CUSTOM_DATA" \
+            --computer-name plaz-smoke \
             --output none
 
           VM_IP=$(az vm show -d \
@@ -455,36 +466,52 @@ jobs:
             exit 1
           } || true
 
-      - name: Assert Comin is active via run-command
+      - name: Wait for Comin to complete first deployment
         env:
           SMOKE_RG: ${{ steps.provision.outputs.smoke_rg }}
           VM_NAME:  ${{ steps.provision.outputs.vm_name }}
         run: |
           set -euo pipefail
-          OUT=$(az vm run-command invoke \
-            --resource-group "$SMOKE_RG" --name "$VM_NAME" \
-            --command-id RunShellScript \
-            --scripts '
-              # NixOS: waagent run-command uses a minimal PATH (/usr/bin:/bin).
-              # All NixOS system binaries live under /run/current-system/sw/bin.
-              # This must be the first line of every run-command script in this workflow.
-              export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:$PATH
-              set -euo pipefail
-              echo "=== nixos-version ==="
-              nixos-version
-              echo "=== comin status ==="
-              systemctl status comin --no-pager || true
-              echo "=== comin is-active ==="
-              systemctl is-active comin
-              echo "TIER2_OK"
-            ' \
-            --output json)
-          STDOUT=$(echo "$OUT" | jq -r '.value[0].message // ""')
-          echo "$STDOUT"
-          echo "$STDOUT" | grep -q "TIER2_OK" || {
-            echo "::error::TIER2_OK sentinel missing — run-command failed or comin not active"
+          # NixOS: waagent run-command uses a minimal PATH (/usr/bin:/bin).
+          # All NixOS system binaries live under /run/current-system/sw/bin.
+          # This preamble must be the first line of every run-command script.
+          NIXOS_PATH_PREAMBLE='export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:$PATH'
+
+          echo "Polling for Comin to complete its first deployment (generation > 1)..."
+          for i in $(seq 1 30); do
+            OUT=$(az vm run-command invoke \
+              --resource-group "$SMOKE_RG" --name "$VM_NAME" \
+              --command-id RunShellScript \
+              --scripts "
+                $NIXOS_PATH_PREAMBLE
+                set -euo pipefail
+                # Generation count in the system profile.
+                # Generation 1 = the baked image. Generation 2+ = Comin applied at least once.
+                gen_count=\$(nix-env --list-generations --profile /nix/var/nix/profiles/system 2>/dev/null | wc -l || echo 0)
+                echo \"GENERATION_COUNT=\$gen_count\"
+                # Also emit current hostname to confirm plaz-smoke config is applied
+                echo \"HOSTNAME=\$(hostname)\"
+                # Emit comin journal tail for visibility
+                echo '=== comin journal ==='
+                journalctl -u comin --no-pager -n 20 2>/dev/null || true
+              " \
+              --output json 2>/dev/null || echo '{"value":[{"message":""}]}')
+            STDOUT=$(echo "$OUT" | jq -r '.value[0].message // ""')
+            echo "--- attempt $i ---"
+            echo "$STDOUT"
+            GEN=$(echo "$STDOUT" | grep -oP 'GENERATION_COUNT=\K[0-9]+' || echo "0")
+            if [ "${GEN:-0}" -ge 2 ]; then
+              echo "✅ Comin applied successfully (generation count: $GEN)"
+              echo "COMIN_DEPLOYED=true" >> "$GITHUB_ENV"
+              break
+            fi
+            echo "Generation count: ${GEN:-0} — waiting 30s..."
+            sleep 30
+          done
+          if [ "${COMIN_DEPLOYED:-false}" != "true" ]; then
+            echo "::error::Comin did not complete a deployment after 30 attempts (~15 min)"
             exit 1
-          }
+          fi
 
       - name: Assert via SSH (single attempt)
         env:
@@ -495,14 +522,24 @@ jobs:
           # StrictHostKeyChecking=accept-new: accept the host key on first connection
           # only; reject if it changes. This is safe for ephemeral smoke-test VMs
           # that we provisioned moments ago and will destroy immediately after.
-          ssh -i "$SSH_DIR/id" \
+          SSH_OUT=$(ssh -i "$SSH_DIR/id" \
             -o StrictHostKeyChecking=accept-new \
             -o BatchMode=yes \
             -o ConnectTimeout=30 \
             -o ServerAliveInterval=30 \
             -o IdentitiesOnly=yes \
             "azureuser@${VM_IP}" \
-            'export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:$PATH && nixos-version && systemctl is-active comin && echo SSH_ASSERT_OK'
+            'export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:$PATH
+             nixos-version && hostname && systemctl is-active comin && echo SSH_ASSERT_OK')
+          echo "$SSH_OUT"
+          echo "$SSH_OUT" | grep -q "plaz-smoke" || {
+            echo "::error::SSH assert: hostname 'plaz-smoke' not found — Comin-applied config may not be live"
+            exit 1
+          }
+          echo "$SSH_OUT" | grep -q "SSH_ASSERT_OK" || {
+            echo "::error::SSH assert: SSH_ASSERT_OK sentinel missing"
+            exit 1
+          }
 
       - name: Tear down smoke RG
         if: always()
