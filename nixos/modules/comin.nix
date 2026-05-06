@@ -6,8 +6,11 @@
 # operations visible in git.
 #
 # Token path is controlled by the `plaz.comin.tokenPath` option:
-#   - null (default): anonymous fetch, no auth. Correct for public repos
-#     and for the baked gallery image on first boot.
+#   - null (default): anonymous fetch, no auth. Only used as the
+#     NixOS-level default; no deployed config should use null.
+#   - "/etc/comin-bootstrap-token": baked image and smoke VM on first
+#     boot. Written by cloud-init customData at VM creation time.
+#     Works for both public and private repos.
 #   - "/run/agenix/comin-github-token": production hosts (e.g. gw1) after
 #     agenix decrypts the secret using the VM's SSH host key.
 #
@@ -130,26 +133,23 @@ in
 
         null (default)
           No auth. Comin fetches the repo anonymously.
-          Correct for public repos and for the baked gallery image
-          on first boot — the token is not yet available until after
-          the first successful nixos-rebuild switch.
+          Only used as the option's NixOS-level default; no deployed
+          configuration should leave this null (the baked image sets
+          "/etc/comin-bootstrap-token" and production hosts set
+          "/run/agenix/comin-github-token").
+
+        "/etc/comin-bootstrap-token"
+          Set in the baked image (image-bake/flake.nix) and in
+          plaz-smoke/default.nix. The file is written by cloud-init
+          customData at VM creation time. Works for both public and
+          private repos — authenticated requests avoid rate-limits on
+          public repos and are required for private repos.
 
         "/run/agenix/comin-github-token"
-          Set this on production hosts (e.g. gw1). After the first
+          Set on production hosts (e.g. gw1). After the first
           Comin apply, agenix decrypts the secret from the .age file
           using the VM's SSH host key (injected at provisioning time
           via cloud-init customData by deploy-workload).
-
-        Private repo bootstrap path (future):
-          For private repos, set tokenPath = "/etc/comin-bootstrap-token"
-          IN THE BAKED IMAGE config. deploy-workload writes the token to
-          this path via cloud-init customData at VM creation time (in the
-          same payload that already carries the SSH host key, Phase 5).
-          After the first successful Comin apply the runtime
-          nixosConfiguration switches tokenPath to
-          "/run/agenix/comin-github-token" for ongoing operation.
-          The bootstrap path is a one-boot transitional token; the
-          agenix-managed path is the permanent steady-state token.
       '';
     };
   };

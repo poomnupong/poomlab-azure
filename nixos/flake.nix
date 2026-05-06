@@ -112,9 +112,9 @@
           ./hosts/plaz-smoke/default.nix
           ./hosts/plaz-smoke/hardware.nix
           {
-            # plaz.comin.tokenPath defaults to null — public repo, no auth needed.
-            # After the first Comin apply the plaz-smoke config itself is applied,
-            # which continues to use null (smoke VMs are always ephemeral and public).
+            # plaz.comin.tokenPath = "/etc/comin-bootstrap-token" is set in
+            # hosts/plaz-smoke/default.nix; cloud-init delivers the PAT at
+            # VM creation time. Works for both public and private repos.
             age.secrets = lib.mkForce {};
             system.stateVersion = "25.11";
           }

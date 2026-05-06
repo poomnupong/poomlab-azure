@@ -135,6 +135,18 @@
           # In the bake context we pin to stable - version is not critical here;
           # Comin will update via nixos-rebuild from the runtime flake.
           _module.args.pkgs-unstable = pkgs;
+
+          # ── Bootstrap token for private repo support ──────────────────
+          # The baked image expects a GitHub PAT at this path so Comin can
+          # authenticate on first boot — even if the repo is private.
+          # The file is written by cloud-init customData at VM creation
+          # time (deploy-workload + image-bake smoke-tier2).
+          # For a public repo the token is optional but harmless: Comin
+          # authenticates anyway, which just avoids rate-limit issues.
+          # After the first Comin apply the host config (e.g. gw1) switches
+          # tokenPath to "/run/agenix/comin-github-token" (agenix-managed);
+          # the bootstrap file becomes inert.
+          plaz.comin.tokenPath = "/etc/comin-bootstrap-token";
         })
       ];
 

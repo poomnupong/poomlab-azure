@@ -306,6 +306,11 @@ jobs:
           	    owner: root:root
           	    content: |
           	      $PUBKEY
+          	  - path: /etc/comin-bootstrap-token
+          	    permissions: '0400'
+          	    owner: root:root
+          	    content: |
+          	      $GH_PAT
           	CLOUDINIT
           )
 

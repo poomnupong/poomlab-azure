@@ -370,8 +370,10 @@ jobs:
         env:
           GALLERY_VERSION: ${{ needs.publish.outputs.gallery_version }}
           SSH_DIR:         ${{ steps.ssh.outputs.dir }}
+          GH_PAT:          ${{ secrets.GH_PAT }}
         run: |
           set -euo pipefail
+          echo "::add-mask::$GH_PAT"
 
           # Per-run RG name so concurrent / retried runs cannot collide and
           # async (--no-wait) teardown of one run cannot race a fresh run.
@@ -405,14 +407,34 @@ jobs:
 
           PUBKEY=$(cat "$SSH_DIR/id.pub")
 
+          # ── Build cloud-init customData ────────────────────────────────
+          # Write the GitHub PAT to /etc/comin-bootstrap-token so Comin
+          # can authenticate on first boot. This works for both public and
+          # private repos: public repos accept authenticated requests
+          # (avoids rate-limit), private repos require them.
+          #
+          # NB: heredoc body uses "<10 spaces><tab><content>" pattern.
+          # The spaces satisfy this `run: |` YAML block scalar's indent;
+          # the tab is stripped by `<<-CLOUDINIT` (POSIX <<- strips tabs).
+          CLOUD_INIT=$(cat <<-CLOUDINIT
+          	#cloud-config
+          	write_files:
+          	  - path: /etc/comin-bootstrap-token
+          	    permissions: '0400'
+          	    owner: root:root
+          	    content: |
+          	      ${GH_PAT}
+          	CLOUDINIT
+          )
+          CUSTOM_DATA_B64=$(printf '%s' "$CLOUD_INIT" | base64 -w 0)
+          echo "::add-mask::$CUSTOM_DATA_B64"
+
           # Standard_D4ads_v7 is an NVMe-only SKU (no SCSI controller for the
           # OS disk), so we must explicitly request the NVMe disk controller.
           # The image definition already advertises "SCSI, NVMe" support via
           # infra/modules/gallery/main.bicep (DiskControllerTypes feature).
           # --computer-name plaz-smoke matches nixosConfigurations.plaz-smoke
           # so Comin can find the correct configuration to apply.
-          # plaz.comin.tokenPath = null in plaz-smoke config means Comin
-          # fetches the public repo anonymously — no token injection needed.
           az vm create \
             --resource-group "$SMOKE_RG" \
             --name "$VM_NAME" \
@@ -423,6 +445,7 @@ jobs:
             --ssh-key-value "$PUBKEY" \
             --public-ip-sku Standard \
             --computer-name plaz-smoke \
+            --custom-data <(echo "$CLOUD_INIT") \
             --output none
 
           VM_IP=$(az vm show -d \
