@@ -152,11 +152,104 @@
         # nixos-azimage-builder does not export nixosModules, so import via path
         "${nixos-azimage-builder}/core_pulse.nix"
       ] ++ appModules ++ [
-        {
-          # waagent must be enabled in the baked image so it survives
-          # nixos-rebuild switch after Comin applies config (D5 Tier 1 gate)
-          services.waagent.enable = true;
-        }
+        ({ config, lib, pkgs, ... }:
+          let
+            # Re-derive the same YAML config Comin's own NixOS module bakes
+            # into the store. We need a stable on-disk path so the rewrite
+            # script (below) can sed-substitute the `hostname:` line.
+            #
+            # `comin/nix/comin-config.nix` is a plain function (not a NixOS
+            # module) that builds the YAML from `config.services.comin.*`.
+            # Passing this configuration's `config` therefore yields exactly
+            # the same derivation Comin's module would produce — the
+            # content-addressable store path is identical.
+            bakedCominYaml =
+              (import "${comin}/nix/comin-config.nix" {
+                inherit config pkgs lib;
+              }).cominConfigYaml;
+
+            # Boot-time hostname rewrite for Comin. Runs as ExecStartPre on
+            # comin.service. On Azure: query IMDS for the VM's computerName
+            # and substitute the `hostname:` field of the baked YAML,
+            # writing the result to /run/comin/config.yaml. Off-Azure
+            # (e.g. nixosTest QEMU): copy the baked YAML through unchanged
+            # so the unit still has a valid --config to point at.
+            cominHostnameRewrite = pkgs.writeShellScript "comin-hostname-from-imds" ''
+              set -euo pipefail
+              install -d -m 0755 /run/comin
+
+              # Detect Azure cheaply via SMBIOS so we don't hit the IMDS
+              # timeout path on non-Azure rigs (e.g. the smoke test VM).
+              vendor=""
+              if [ -r /sys/class/dmi/id/sys_vendor ]; then
+                vendor=$(cat /sys/class/dmi/id/sys_vendor)
+              fi
+
+              host=""
+              if [ "$vendor" = "Microsoft Corporation" ]; then
+                # IMDS may need a moment on first boot. Bounded retry.
+                for _ in 1 2 3 4 5; do
+                  host=$(${pkgs.curl}/bin/curl -fsS --max-time 3 \
+                    -H "Metadata: true" \
+                    "http://169.254.169.254/metadata/instance/compute/osProfile/computerName?api-version=2021-12-13&format=text" \
+                    2>/dev/null || true)
+                  if [ -n "$host" ]; then break; fi
+                  sleep 2
+                done
+              fi
+
+              if [ -n "$host" ]; then
+                ${pkgs.gnused}/bin/sed -E \
+                  "s|^hostname: .*$|hostname: $host|" \
+                  ${bakedCominYaml} > /run/comin/config.yaml
+              else
+                # Fallback: serve the baked YAML untouched. Safe because
+                # the only consumer outside Azure is the smoke test, which
+                # never actually starts comin.
+                install -m 0644 ${bakedCominYaml} /run/comin/config.yaml
+              fi
+              chmod 0644 /run/comin/config.yaml
+            '';
+          in {
+            # waagent must be enabled in the baked image so it survives
+            # nixos-rebuild switch after Comin applies config (D5 Tier 1 gate)
+            services.waagent.enable = true;
+
+            # ── Runtime hostname injection for Comin ───────────────────
+            # The image bakes `networking.hostName = "plaz-image"` (a
+            # placeholder required to satisfy Comin's eval-time assertion;
+            # see appModules above). At runtime the VM is actually called
+            # something else (gw1, plaz-smoke, …). Comin's only source of
+            # truth for which `nixosConfigurations.<host>` to evaluate is
+            # the `hostname:` field of its YAML config; if that says
+            # "plaz-image" the configuration won't exist in the runtime
+            # flake and Comin crash-loops on every boot until the first
+            # manual nixos-rebuild.
+            #
+            # We rewrite the YAML at boot time, before comin starts:
+            # query IMDS for the VM's `computerName` and substitute the
+            # `hostname:` line, writing the result to
+            # /run/comin/config.yaml. ExecStart is overridden to consume
+            # that path. The rewrite is uniform across smoke and prod —
+            # every Azure VM converges the same way, with no runner SSH
+            # in the hot path.
+            #
+            # After the first successful Comin → nixos-rebuild to the
+            # proper host configuration, comin.service is regenerated
+            # from the runtime nixos/flake.nix (which has a real
+            # `networking.hostName` and no such override), so the rewrite
+            # naturally drops out from gen 2 onward.
+            systemd.services.comin.serviceConfig = {
+              RuntimeDirectory = "comin";
+              RuntimeDirectoryMode = "0755";
+              ExecStartPre = [ "${cominHostnameRewrite}" ];
+              ExecStart = lib.mkForce (
+                "${lib.getExe config.services.comin.package}"
+                + (lib.optionalString config.services.comin.debug " --debug ")
+                + " run --config /run/comin/config.yaml"
+              );
+            };
+          })
       ];
 
     in {
