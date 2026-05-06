@@ -101,7 +101,8 @@ jobs:
         run: |
           cd image-bake
           # Use a separate out-link so we don't clobber ./result (which points
-          # to the VHD output and is referenced by VHD_PATH from the locate step).
+          # to the VHD output referenced by the locate step's vhd_path output
+          # and consumed by the compress step).
           nix build .#checks.x86_64-linux.smokeTest --print-build-logs -o result-smoke
           echo "Tier 1 smoke test passed"
 
