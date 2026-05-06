@@ -407,7 +407,7 @@ jobs:
           # Standard_D4ads_v7 is an NVMe-only SKU (no SCSI controller for the
           # OS disk), so we must explicitly request the NVMe disk controller.
           # The image definition already advertises "SCSI, NVMe" support via
-          # gallery.bicep (DiskControllerTypes feature).
+          # infra/modules/gallery/main.bicep (DiskControllerTypes feature).
           az vm create \
             --resource-group "$SMOKE_RG" \
             --name "$VM_NAME" \
