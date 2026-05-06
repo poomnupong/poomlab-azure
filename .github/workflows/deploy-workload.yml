@@ -285,22 +285,29 @@ jobs:
           # The private key lines are indented 6 spaces under `content: |`.
           # Indent private key lines by 6 spaces to sit correctly under
           # the YAML `content: |` block (2-space list indent + 4-space key indent).
+          #
+          # NB: each heredoc body line below is "<10 spaces><tab><content>".
+          # The 10 spaces satisfy this `run: |` YAML block scalar's indent
+          # (without them YAML treats the dedented line as the block's end
+          # and the workflow file fails to parse). The tab is then stripped
+          # by `<<-CLOUDINIT` (POSIX `<<-` only strips leading TABS, not
+          # spaces) so the rendered cloud-init document starts at column 0.
           PRIVKEY_INDENTED=$(echo "$PRIVKEY" | sed 's/^/      /')
-          CLOUD_INIT=$(cat <<CLOUDINIT
-#cloud-config
-write_files:
-  - path: /etc/ssh/ssh_host_ed25519_key
-    permissions: '0600'
-    owner: root:root
-    content: |
-$PRIVKEY_INDENTED
-  - path: /etc/ssh/ssh_host_ed25519_key.pub
-    permissions: '0644'
-    owner: root:root
-    content: |
-      $PUBKEY
-CLOUDINIT
-)
+          CLOUD_INIT=$(cat <<-CLOUDINIT
+          	#cloud-config
+          	write_files:
+          	  - path: /etc/ssh/ssh_host_ed25519_key
+          	    permissions: '0600'
+          	    owner: root:root
+          	    content: |
+          	$PRIVKEY_INDENTED
+          	  - path: /etc/ssh/ssh_host_ed25519_key.pub
+          	    permissions: '0644'
+          	    owner: root:root
+          	    content: |
+          	      $PUBKEY
+          	CLOUDINIT
+          )
 
           CUSTOM_DATA_B64=$(printf '%s' "$CLOUD_INIT" | base64 -w 0)
           # Mask the payload before exporting: it contains the host private
