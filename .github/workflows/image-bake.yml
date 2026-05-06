@@ -429,6 +429,11 @@ jobs:
           CUSTOM_DATA_B64=$(printf '%s' "$CLOUD_INIT" | base64 -w 0)
           echo "::add-mask::$CUSTOM_DATA_B64"
 
+          # Write cloud-init to a temp file for --custom-data (az cli
+          # expects a file path, not process substitution).
+          CLOUD_INIT_FILE=$(mktemp)
+          printf '%s' "$CLOUD_INIT" > "$CLOUD_INIT_FILE"
+
           # Standard_D4ads_v7 is an NVMe-only SKU (no SCSI controller for the
           # OS disk), so we must explicitly request the NVMe disk controller.
           # The image definition already advertises "SCSI, NVMe" support via
@@ -445,8 +450,10 @@ jobs:
             --ssh-key-value "$PUBKEY" \
             --public-ip-sku Standard \
             --computer-name plaz-smoke \
-            --custom-data <(echo "$CLOUD_INIT") \
+            --custom-data "$CLOUD_INIT_FILE" \
             --output none
+
+          rm -f "$CLOUD_INIT_FILE"
 
           VM_IP=$(az vm show -d \
             --resource-group "$SMOKE_RG" --name "$VM_NAME" \
