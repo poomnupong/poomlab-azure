@@ -12,6 +12,10 @@
 { ... }:
 
 {
+  # ── Hostname ────────────────────────────────────────────────────────
+  # Must match --computer-name plaz-smoke used in image-bake.yml smoke-tier2.
+  networking.hostName = "plaz-smoke";
+
   networking.firewall = {
     enable = true;
     allowedTCPPorts = [ 22 ];
