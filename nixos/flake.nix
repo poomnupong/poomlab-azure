@@ -109,6 +109,7 @@
           ./modules/base.nix
           ./modules/networking.nix
           ./hosts/plaz-smoke/default.nix
+          ./hosts/plaz-smoke/hardware.nix
           {
             networking.hostName = "plaz-smoke";
 
