@@ -465,6 +465,10 @@ jobs:
             --resource-group "$SMOKE_RG" --name "$VM_NAME" \
             --command-id RunShellScript \
             --scripts '
+              # NixOS: waagent run-command uses a minimal PATH (/usr/bin:/bin).
+              # All NixOS system binaries live under /run/current-system/sw/bin.
+              # This must be the first line of every run-command script in this workflow.
+              export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:$PATH
               set -euo pipefail
               echo "=== nixos-version ==="
               nixos-version
@@ -498,7 +502,7 @@ jobs:
             -o ServerAliveInterval=30 \
             -o IdentitiesOnly=yes \
             "azureuser@${VM_IP}" \
-            'nixos-version && systemctl is-active comin && echo SSH_ASSERT_OK'
+            'export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:$PATH && nixos-version && systemctl is-active comin && echo SSH_ASSERT_OK'
 
       - name: Tear down smoke RG
         if: always()
