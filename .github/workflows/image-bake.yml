@@ -576,6 +576,7 @@ jobs:
             fi
             if [ "${GEN:-0}" -ge 1 ]; then
               echo "✅ Comin applied successfully (generation count: $GEN)"
+              COMIN_DEPLOYED=true
               echo "COMIN_DEPLOYED=true" >> "$GITHUB_ENV"
               break
             fi
