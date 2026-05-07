@@ -26,10 +26,32 @@ long-lived password or certificate is stored.
 
 ## ADMIN_SSH_PUBLIC_KEY
 
-Your SSH public key, injected into VM `authorized_keys` by `deploy-workload` and
-read by `ci-pr` during the `az deployment sub what-if` step (the Bicep template
-accepts it as a parameter).  This is **not** related to OIDC — it is a static
-value from your local machine.
+### Repo file (NixOS / Comin)
+
+Admin SSH public keys are committed to `nixos/keys/admin.pub` — one key per
+line, blank lines and `#` comments ignored.  `base.nix` reads this file at Nix
+eval time and populates `openssh.authorizedKeys.keys` for the `azureuser`
+account on every host.
+
+Because Comin evaluates the Nix expression purely from repo contents on the
+host, the key **must** live in the repo.  A GitHub secret alone would be wiped
+on the first `nixos-rebuild switch`.
+
+Multiple keys are supported — just add one key per line:
+
+```text
+ssh-ed25519 AAAA... alice@workstation
+ssh-ed25519 AAAA... bob@laptop
+```
+
+After editing, commit and push.  Comin will apply the change automatically.
+
+### GitHub secret (Azure / Bicep)
+
+The `ADMIN_SSH_PUBLIC_KEY` **secret** is still required by the `deploy-workload`
+and `ci-pr` workflows.  The Bicep template injects it into the Azure VM's
+`linuxConfiguration.ssh.publicKeys` at creation time — before NixOS or Comin
+run.  Keep the secret in sync with the first key in `nixos/keys/admin.pub`.
 
 | Secret Name              | Description                                      |
 |--------------------------|--------------------------------------------------|
@@ -40,6 +62,20 @@ Set it with:
 ```bash
 gh secret set ADMIN_SSH_PUBLIC_KEY --repo poomnupong/poomlab-azure --body "$(cat ~/.ssh/id_ed25519.pub)"
 ```
+
+### Bootstrap checklist
+
+1. Generate (or locate) your SSH key pair:
+   ```bash
+   ssh-keygen -t ed25519 -C "yourname@host"
+   ```
+2. Paste your **public** key into `nixos/keys/admin.pub` and commit.
+3. Set the GitHub secret to the same value:
+   ```bash
+   gh secret set ADMIN_SSH_PUBLIC_KEY --repo poomnupong/poomlab-azure \
+     --body "$(cat ~/.ssh/id_ed25519.pub)"
+   ```
+4. Push — Comin will deploy the key to all running hosts.
 
 ---
 
@@ -176,5 +212,5 @@ needed.
 | `AZURE_TENANT_ID`        | all Azure workflows                              | Created by bootstrap script        |
 | `AZURE_SUBSCRIPTION_ID`  | all Azure workflows                              | Created by bootstrap script        |
 | `CI_SP_OBJECT_ID`        | `landing-zone`                                   | Object ID for Key Vault Secrets Officer role; get via `az ad sp show` |
-| `ADMIN_SSH_PUBLIC_KEY`   | `deploy-workload`, `ci-pr`                       | Your SSH public key; injected into VM `authorized_keys` |
+| `ADMIN_SSH_PUBLIC_KEY`   | `deploy-workload`, `ci-pr`                       | Azure VM initial provisioning; keep in sync with `nixos/keys/admin.pub` |
 | `GH_PAT`                 | `update-flake-lock`, `deploy-workload`           | Fine-grained PAT (Contents + Pull requests + Commit statuses, R/W) |

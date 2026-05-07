@@ -1,0 +1,14 @@
+# Admin SSH authorized keys
+#
+# One SSH public key per line. Blank lines and lines starting with '#' are ignored.
+# These keys are deployed to all hosts via base.nix (openssh.authorizedKeys.keys).
+#
+# Supports multiple keys — add one key per line:
+#   ssh-ed25519 AAAA... alice@workstation
+#   ssh-ed25519 AAAA... bob@laptop
+#
+# After editing, commit and push. Comin will apply the change on all hosts
+# automatically (no redeployment needed).
+#
+# See docs/secrets.md § "ADMIN_SSH_PUBLIC_KEY" for bootstrap instructions.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRaqicxUyvD6ii5jyiIPGeSJHOIwp82fvNvaGROz4Lt
