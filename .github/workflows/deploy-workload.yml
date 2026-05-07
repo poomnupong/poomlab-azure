@@ -320,6 +320,15 @@ jobs:
           echo "::add-mask::$CUSTOM_DATA_B64"
           echo "CUSTOM_DATA_B64=$CUSTOM_DATA_B64" >> "$GITHUB_ENV"
 
+          # Export key material for run-command delivery step (belt-and-suspenders
+          # against cloud-init write_files being silently skipped on NixOS images
+          # that predate the cloud_config_modules fix).
+          PRIVKEY_B64=$(printf '%s' "$PRIVKEY" | base64 -w 0)
+          PUBKEY_B64=$(printf '%s' "$PUBKEY" | base64 -w 0)
+          echo "::add-mask::$PRIVKEY_B64"
+          echo "HOSTKEY_PRIV_B64=$PRIVKEY_B64" >> "$GITHUB_ENV"
+          echo "HOSTKEY_PUB_B64=$PUBKEY_B64"  >> "$GITHUB_ENV"
+
           # Cleanup key material from runner disk
           rm -rf "$KEY_DIR"
           echo "hostkey_generated=true" >> "$GITHUB_OUTPUT"
@@ -354,6 +363,77 @@ jobs:
             --name "deploy-${{ env.PROJECT_NAME }}" \
             --query properties.outputs \
             --output table
+
+      - name: Wait for waagent ready
+        if: steps.vm-state.outputs.image_changed == 'true'
+        run: |
+          set -euo pipefail
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          display="unknown"
+          for i in $(seq 1 30); do
+            agent_status=$(az vm get-instance-view \
+              --resource-group "$RG" --name "$VM_NAME" \
+              --query 'instanceView.vmAgent' -o json 2>/dev/null || echo '{}')
+            if [ -z "$agent_status" ] || [ "$agent_status" = "null" ]; then
+              agent_status='{}'
+            fi
+            display=$(echo "$agent_status" | jq -r '(.statuses[0].displayStatus // "unknown")')
+            version=$(echo "$agent_status" | jq -r '(.vmAgentVersion // "unknown")')
+            echo "attempt $i: status=$display version=$version"
+            [ "$display" = "Ready" ] && { echo "waagent is ready"; break; }
+            sleep 10
+          done
+          [ "$display" != "Ready" ] && {
+            echo "::error::waagent did not become ready after 30 attempts (~5 min)"
+            exit 1
+          } || true
+
+      - name: Write host key and bootstrap token via run-command
+        if: steps.vm-state.outputs.image_changed == 'true'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          HOSTKEY_PRIV_B64: ${{ env.HOSTKEY_PRIV_B64 }}
+          HOSTKEY_PUB_B64: ${{ env.HOSTKEY_PUB_B64 }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$GH_PAT"
+          echo "::add-mask::$HOSTKEY_PRIV_B64"
+
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          TOKEN_B64=$(printf '%s' "$GH_PAT" | base64 -w 0)
+          echo "::add-mask::$TOKEN_B64"
+
+          az vm run-command invoke \
+            --resource-group "$RG" --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts "
+              export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:\$PATH
+              set -euo pipefail
+
+              # Write SSH host private key
+              printf '%s' '$HOSTKEY_PRIV_B64' | base64 -d \
+                | install -m 0600 -o root -g root /dev/stdin /etc/ssh/ssh_host_ed25519_key
+
+              # Write SSH host public key
+              printf '%s' '$HOSTKEY_PUB_B64' | base64 -d \
+                | install -m 0644 -o root -g root /dev/stdin /etc/ssh/ssh_host_ed25519_key.pub
+
+              # Write Comin bootstrap token
+              printf '%s' '$TOKEN_B64' | base64 -d \
+                | install -m 0400 -o root -g root /dev/stdin /etc/comin-bootstrap-token
+
+              # Restart sshd so it picks up the new host key
+              systemctl restart sshd || true
+
+              # Restart comin so it picks up the bootstrap token
+              systemctl reset-failed comin.service || true
+              systemctl restart comin.service
+
+              echo 'Host key and bootstrap token written; sshd and comin restarted'
+            "
+          echo "✅ Host key and bootstrap token delivered via run-command"
 
       - name: Job summary
         if: always()
