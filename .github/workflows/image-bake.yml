@@ -588,31 +588,37 @@ jobs:
             exit 1
           fi
 
-      - name: Assert via SSH (single attempt)
+      - name: Assert via run-command (post-Comin)
+        # SSH cannot be used here: when Comin applies plaz-smoke's NixOS
+        # config, base.nix's declarative openssh.authorizedKeys.keys (empty)
+        # overwrites the ephemeral key Azure injected at VM creation.
+        # run-command (via waagent) is unaffected and already proven by the
+        # polling step above.
         env:
-          VM_IP:   ${{ steps.provision.outputs.vm_ip }}
-          SSH_DIR: ${{ steps.ssh.outputs.dir }}
+          SMOKE_RG: ${{ steps.provision.outputs.smoke_rg }}
+          VM_NAME:  ${{ steps.provision.outputs.vm_name }}
         run: |
           set -euo pipefail
-          # StrictHostKeyChecking=accept-new: accept the host key on first connection
-          # only; reject if it changes. This is safe for ephemeral smoke-test VMs
-          # that we provisioned moments ago and will destroy immediately after.
-          SSH_OUT=$(ssh -i "$SSH_DIR/id" \
-            -o StrictHostKeyChecking=accept-new \
-            -o BatchMode=yes \
-            -o ConnectTimeout=30 \
-            -o ServerAliveInterval=30 \
-            -o IdentitiesOnly=yes \
-            "azureuser@${VM_IP}" \
-            'export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:$PATH
-             nixos-version && hostname && systemctl is-active comin && echo SSH_ASSERT_OK')
-          echo "$SSH_OUT"
-          echo "$SSH_OUT" | grep -q "plaz-smoke" || {
-            echo "::error::SSH assert: hostname 'plaz-smoke' not found — Comin-applied config may not be live"
+          OUT=$(az vm run-command invoke \
+            --resource-group "$SMOKE_RG" --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts "
+              export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:\$PATH
+              set -euo pipefail
+              nixos-version
+              hostname
+              systemctl is-active comin
+              echo ASSERT_OK
+            " \
+            --output json 2>/dev/null || echo '{"value":[{"message":""}]}')
+          STDOUT=$(echo "$OUT" | jq -r '.value[0].message // ""')
+          echo "$STDOUT"
+          echo "$STDOUT" | grep -q "plaz-smoke" || {
+            echo "::error::Assert: hostname 'plaz-smoke' not found — Comin-applied config may not be live"
             exit 1
           }
-          echo "$SSH_OUT" | grep -q "SSH_ASSERT_OK" || {
-            echo "::error::SSH assert: SSH_ASSERT_OK sentinel missing"
+          echo "$STDOUT" | grep -q "ASSERT_OK" || {
+            echo "::error::Assert: ASSERT_OK sentinel missing"
             exit 1
           }
 
