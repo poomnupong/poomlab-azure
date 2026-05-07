@@ -1,15 +1,13 @@
 # secrets.nix — Agenix recipients list
 #
-# AUTO-POPULATED by deploy-infra.yml — do not edit the key values manually.
-# To rotate secrets, see docs/comin-deployment.md.
+# AUTO-POPULATED by deploy-workload.yml (Phase 5, Option A).
+# Host key is generated in CI, stored in Key Vault, injected
+# via cloud-init customData on VM creation.
+# Do not edit key values manually.
 #
-# VM keys extracted from SSH host keys via az vm run-command + ssh-to-age.
-# The VM's SSH host key is the only recipient — agenix decrypts on the VM
-# using /etc/ssh/ssh_host_ed25519_key (the private half of this key).
-
 let
   # ── VM host keys ────────────────────────────────────────────────
-  gw1 = "age1fcvee7uadn9pyd0y8n0tdtle05gkjxx3za8lvw6t5j74anhxgsrsd435y2";
+  gw1 = "age1rkh86t00gnp86yqkk6rhrar9s8vq5vejgegslhxzccjrwl3ceqxqq8a79a";
 
   allSystems = [ gw1 ];
 in
