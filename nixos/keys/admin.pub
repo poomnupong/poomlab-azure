@@ -11,3 +11,4 @@
 # automatically (no redeployment needed).
 #
 # See docs/secrets.md § "ADMIN_SSH_PUBLIC_KEY" for bootstrap instructions.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRaqicxUyvD6ii5jyiIPGeSJHOIwp82fvNvaGROz4Lt

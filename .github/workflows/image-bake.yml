@@ -610,9 +610,11 @@ jobs:
               systemctl is-active comin
               echo ASSERT_OK
             " \
-            --output json 2>/dev/null || echo '{"value":[{"message":""}]}')
+            --output json)
           STDOUT=$(echo "$OUT" | jq -r '.value[0].message // ""')
+          STDERR=$(echo "$OUT" | jq -r '.value[1].message // ""')
           echo "$STDOUT"
+          [ -n "$STDERR" ] && echo "::warning::run-command stderr: $STDERR"
           echo "$STDOUT" | grep -q "plaz-smoke" || {
             echo "::error::Assert: hostname 'plaz-smoke' not found — Comin-applied config may not be live"
             exit 1

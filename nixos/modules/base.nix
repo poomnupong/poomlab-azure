@@ -53,11 +53,9 @@
       let
         raw = builtins.readFile ../keys/admin.pub;
         lines = lib.splitString "\n" raw;
+        trimmed = map lib.trim lines;
       in
-      builtins.filter (line:
-        let trimmed = lib.trim line;
-        in trimmed != "" && !(lib.hasPrefix "#" trimmed)
-      ) lines;
+      builtins.filter (line: line != "" && !(lib.hasPrefix "#" line)) trimmed;
   };
 
   # ── SSH daemon ───────────────────────────────────────────────────────
