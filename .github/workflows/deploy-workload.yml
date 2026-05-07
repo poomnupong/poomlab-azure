@@ -368,24 +368,29 @@ jobs:
         if: steps.vm-state.outputs.image_changed == 'true'
         run: |
           set -euo pipefail
+          MAX_ATTEMPTS=30
+          POLL_INTERVAL=10
           VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
           RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
           display="unknown"
-          for i in $(seq 1 30); do
+          for i in $(seq 1 $MAX_ATTEMPTS); do
             agent_status=$(az vm get-instance-view \
               --resource-group "$RG" --name "$VM_NAME" \
               --query 'instanceView.vmAgent' -o json 2>/dev/null || echo '{}')
             if [ -z "$agent_status" ] || [ "$agent_status" = "null" ]; then
               agent_status='{}'
             fi
-            display=$(echo "$agent_status" | jq -r '(.statuses[0].displayStatus // "unknown")')
-            version=$(echo "$agent_status" | jq -r '(.vmAgentVersion // "unknown")')
-            echo "attempt $i: status=$display version=$version"
+            display=$(echo "$agent_status"   | jq -r '(.statuses[0].displayStatus // "unknown")')
+            message=$(echo "$agent_status"   | jq -r '(.statuses[0].message       // "unknown")')
+            version=$(echo "$agent_status"   | jq -r '(.vmAgentVersion            // "unknown")')
+            heartbeat=$(echo "$agent_status" | jq -r '(.statuses[0].time          // "unknown")')
+            echo "attempt $i: status=$display version=$version message=$message heartbeat=$heartbeat"
             [ "$display" = "Ready" ] && { echo "waagent is ready"; break; }
-            sleep 10
+            sleep $POLL_INTERVAL
           done
           [ "$display" != "Ready" ] && {
-            echo "::error::waagent did not become ready after 30 attempts (~5 min)"
+            TIMEOUT_MIN=$(( MAX_ATTEMPTS * POLL_INTERVAL / 60 ))
+            echo "::error::waagent did not become ready after $MAX_ATTEMPTS attempts (~${TIMEOUT_MIN} min)"
             exit 1
           } || true
 
@@ -425,7 +430,9 @@ jobs:
                 | install -m 0400 -o root -g root /dev/stdin /etc/comin-bootstrap-token
 
               # Restart sshd so it picks up the new host key
-              systemctl restart sshd || true
+              if ! systemctl restart sshd; then
+                echo '::warning::sshd restart failed (non-fatal); host key will be picked up on next sshd restart'
+              fi
 
               # Restart comin so it picks up the bootstrap token
               systemctl reset-failed comin.service || true
