@@ -3,7 +3,7 @@
 # Includes: admin user, SSH authorized keys, Nix daemon settings,
 # locale, timezone, and basic packages.
 
-{ config, pkgs, pkgs-unstable, ... }:
+{ config, lib, pkgs, pkgs-unstable, ... }:
 
 {
   # ── Dynamic linker compatibility ────────────────────────────────────
@@ -47,11 +47,14 @@
   users.users.azureuser = {
     isNormalUser = true;
     extraGroups = [ "wheel" ];
-    # TODO: replace with the actual SSH public key for the admin user.
-    # This should match the ADMIN_SSH_PUBLIC_KEY secret set in GitHub Actions.
-    openssh.authorizedKeys.keys = [
-      # "ssh-ed25519 AAAA... your-key-comment"
-    ];
+    # SSH public keys loaded from nixos/keys/admin.pub (one key per line).
+    # Edit that file and push — Comin applies the change on all hosts.
+    openssh.authorizedKeys.keys =
+      let
+        raw = builtins.readFile ../keys/admin.pub;
+        lines = lib.splitString "\n" raw;
+      in
+      builtins.filter (line: line != "" && !(lib.hasPrefix "#" line)) lines;
   };
 
   # ── SSH daemon ───────────────────────────────────────────────────────
