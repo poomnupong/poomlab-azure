@@ -463,8 +463,10 @@ jobs:
           VM_NAME:  ${{ steps.provision.outputs.vm_name }}
         run: |
           set -euo pipefail
+          MAX_ATTEMPTS=30
+          POLL_INTERVAL=10
           display="unknown"
-          for i in $(seq 1 30); do
+          for i in $(seq 1 $MAX_ATTEMPTS); do
             # Default to '{}' so jq always parses valid JSON even if az fails
             # transiently or the vmAgent block isn't populated yet. Use ?//
             # accessors so missing fields don't error out under set -e.
@@ -480,10 +482,11 @@ jobs:
             heartbeat=$(echo "$agent_status" | jq -r '(.statuses[0].time          // "unknown")')
             echo "attempt $i: status=$display version=$version message=$message heartbeat=$heartbeat"
             [ "$display" = "Ready" ] && { echo "waagent is ready"; break; }
-            sleep 10
+            sleep $POLL_INTERVAL
           done
           [ "$display" != "Ready" ] && {
-            echo "::error::waagent did not become ready after 30 attempts"
+            TIMEOUT_MIN=$(( MAX_ATTEMPTS * POLL_INTERVAL / 60 ))
+            echo "::error::waagent did not become ready after $MAX_ATTEMPTS attempts (~${TIMEOUT_MIN} min)"
             exit 1
           } || true
 
