@@ -33,7 +33,6 @@ permissions:
   contents: read    # checkout; secrets push uses explicit GH_PAT
 
 env:
-  DEPLOYMENT_LOCATION: southcentralus
   PROJECT_NAME: plaz
 
 concurrency:
@@ -41,7 +40,10 @@ concurrency:
   # key, writes to Key Vault, and pushes re-encrypted secrets back to the
   # repo. Cancelling mid-flight would leave the repo / Key Vault / VM in
   # inconsistent states. Queue new runs instead.
-  group: workload-plaz-southcentralus
+  #
+  # Group is per-environment so a Singapore (plaz-sea) deploy does not block
+  # a concurrent SCUS (plaz) deploy.
+  group: workload-${{ github.event.inputs.environment || 'plaz' }}
   cancel-in-progress: false
 
 jobs:
@@ -63,11 +65,49 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: production
+    env:
+      # ENV_NAME selects infra/environments/<ENV_NAME>-workload.bicepparam and
+      # all derived resource names (DEPLOYMENT_LOCATION, GATEWAY_NAME,
+      # REGION_CODE). Push events always deploy the default (plaz / SCUS).
+      ENV_NAME: ${{ github.event.inputs.environment || 'plaz' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Resolve environment parameters
+        run: |
+          set -euo pipefail
+          case "$ENV_NAME" in
+            plaz)
+              LOCATION=southcentralus
+              GATEWAY_NAME=gw1
+              REGION_CODE=scus
+              ;;
+            plaz-sea)
+              LOCATION=southeastasia
+              GATEWAY_NAME=gw2
+              REGION_CODE=sea
+              ;;
+            *)
+              echo "::error::Unknown environment: $ENV_NAME. Supported: plaz, plaz-sea."
+              exit 1
+              ;;
+          esac
+          # The Compute Gallery is region-pinned to southcentralus; all
+          # regions consume baked images from that gallery (replicated across
+          # regions by the gallery image-version).
+          GALLERY_LOCATION=southcentralus
+          {
+            echo "DEPLOYMENT_LOCATION=$LOCATION"
+            echo "GATEWAY_NAME=$GATEWAY_NAME"
+            echo "REGION_CODE=$REGION_CODE"
+            echo "GALLERY_LOCATION=$GALLERY_LOCATION"
+            echo "LANDING_ZONE_DEPLOYMENT=landing-zone-$ENV_NAME"
+            echo "WORKLOAD_DEPLOYMENT=deploy-$ENV_NAME"
+          } >> "$GITHUB_ENV"
+          echo "ENV_NAME=$ENV_NAME  LOCATION=$LOCATION  GATEWAY=$GATEWAY_NAME  REGION=$REGION_CODE"
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -80,10 +120,10 @@ jobs:
         run: |
           set -euo pipefail
           SUBNET_ID=$(az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "$LANDING_ZONE_DEPLOYMENT" \
             --query 'properties.outputs.gatewaySubnetId.value' -o tsv 2>/dev/null || true)
           LOG_WS_ID=$(az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "$LANDING_ZONE_DEPLOYMENT" \
             --query 'properties.outputs.logAnalyticsWorkspaceId.value' -o tsv 2>/dev/null || true)
 
           if [ -z "$SUBNET_ID" ] || [ -z "$LOG_WS_ID" ]; then
@@ -102,7 +142,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
+          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${GALLERY_LOCATION}"
           GALLERY_NAME=$(az deployment sub show \
             --name "gallery-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.galleryName.value' -o tsv)
@@ -138,8 +178,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
-          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-${GATEWAY_NAME}-${DEPLOYMENT_LOCATION}"
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${DEPLOYMENT_LOCATION}"
 
           # Capture stdout and stderr separately. Mixing them risks a stray
           # az-CLI warning on stderr being concatenated to the image-id and
@@ -184,9 +224,9 @@ jobs:
         if: steps.vm-state.outputs.image_changed == 'true' && steps.vm-state.outputs.vm_exists == 'true'
         run: |
           set -euo pipefail
-          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
-          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
-          OS_DISK="osdisk-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-${GATEWAY_NAME}-${DEPLOYMENT_LOCATION}"
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${DEPLOYMENT_LOCATION}"
+          OS_DISK="osdisk-${{ env.PROJECT_NAME }}-${GATEWAY_NAME}-${DEPLOYMENT_LOCATION}"
 
           # --force-deletion bypasses soft-delete for the VM itself; the OS disk
           # is deleted explicitly on the next line. NIC and public IP are left
@@ -211,20 +251,20 @@ jobs:
           KEY_DIR=$(mktemp -d)
           chmod 700 "$KEY_DIR"
           ssh-keygen -t ed25519 -N '' \
-            -C 'gw1-host-key' \
+            -C "${GATEWAY_NAME}-host-key" \
             -f "$KEY_DIR/ssh_host_ed25519_key" >/dev/null
 
           PRIVKEY=$(cat "$KEY_DIR/ssh_host_ed25519_key")
           PUBKEY=$(cat  "$KEY_DIR/ssh_host_ed25519_key.pub")
 
           # ── Store private key in Key Vault ────────────────────────────
-          KV_NAME="kv-${{ env.PROJECT_NAME }}-scus"
+          KV_NAME="kv-${{ env.PROJECT_NAME }}-${REGION_CODE}"
           az keyvault secret set \
             --vault-name "$KV_NAME" \
-            --name "gw1-ssh-host-ed25519-key" \
+            --name "${GATEWAY_NAME}-ssh-host-ed25519-key" \
             --value "$PRIVKEY" \
             --output none
-          echo "Private key stored in Key Vault: $KV_NAME / gw1-ssh-host-ed25519-key"
+          echo "Private key stored in Key Vault: $KV_NAME / ${GATEWAY_NAME}-ssh-host-ed25519-key"
 
           # ── Install age + ssh-to-age ──────────────────────────────────
           sudo apt-get update -qq && sudo apt-get install -y -qq age
@@ -235,35 +275,71 @@ jobs:
           VM_AGE_PUBKEY=$(echo "$PUBKEY" | ssh-to-age)
           echo "VM age public key: $VM_AGE_PUBKEY"
 
-          {
-            echo '# secrets.nix — Agenix recipients list'
-            echo '#'
-            echo '# AUTO-POPULATED by deploy-workload.yml (Phase 5, Option A).'
-            echo '# Host key is generated in CI, stored in Key Vault, injected'
-            echo '# via cloud-init customData on VM creation.'
-            echo '# Do not edit key values manually.'
-            echo '#'
-            echo 'let'
-            echo '  # ── VM host keys ────────────────────────────────────────────────'
-            echo "  gw1 = \"$VM_AGE_PUBKEY\";"
-            echo ''
-            echo '  allSystems = [ gw1 ];'
-            echo 'in'
-            echo '{'
-            echo '  "comin-github-token.age".publicKeys = allSystems;'
-            echo '  "tailscale-authkey.age".publicKeys = allSystems;'
-            echo '}'
-          } > nixos/secrets/secrets.nix
+          # Read existing host entries from secrets.nix so we preserve other
+          # hosts (e.g. when rotating gw2 in Singapore, we must keep gw1's
+          # recipient entry intact so it can still decrypt the .age files).
+          SECRETS_NIX=nixos/secrets/secrets.nix
+          python3 - "$SECRETS_NIX" "$GATEWAY_NAME" "$VM_AGE_PUBKEY" <<'PY' > "${SECRETS_NIX}.new"
+          import re, sys
+          path, gw_name, new_key = sys.argv[1], sys.argv[2], sys.argv[3]
+          keys = {}
+          try:
+              with open(path) as f:
+                  for line in f:
+                      m = re.match(r'\s*([a-zA-Z][a-zA-Z0-9_-]*)\s*=\s*"(age1[a-z0-9]+)"\s*;', line)
+                      if m:
+                          keys[m.group(1)] = m.group(2)
+          except FileNotFoundError:
+              pass
+          keys[gw_name] = new_key
+          ordered = sorted(keys.keys())
+          print('# secrets.nix — Agenix recipients list')
+          print('#')
+          print('# AUTO-POPULATED by deploy-workload.yml (Phase 5, Option A).')
+          print('# Host keys are generated in CI, stored in Key Vault, injected')
+          print('# via cloud-init customData on VM creation.')
+          print('# Do not edit key values manually.')
+          print('#')
+          print('let')
+          print('  # ── VM host keys ────────────────────────────────────────────────')
+          for name in ordered:
+              print(f'  {name} = "{keys[name]}";')
+          print('')
+          print(f'  allSystems = [ {" ".join(ordered)} ];')
+          print('in')
+          print('{')
+          print('  "comin-github-token.age".publicKeys = allSystems;')
+          print('  "tailscale-authkey.age".publicKeys = allSystems;')
+          print('}')
+          PY
+          mv "${SECRETS_NIX}.new" "$SECRETS_NIX"
 
-          # Re-encrypt comin-github-token.age for new recipient
-          printf '%s' "$GH_PAT" | age -r "$VM_AGE_PUBKEY" -a \
+          # Collect all current recipients for re-encryption. comin-github-token.age
+          # gets re-encrypted to every host in allSystems so any host can decrypt.
+          ALL_RECIPIENTS=$(grep -oE 'age1[a-z0-9]+' "$SECRETS_NIX" | sort -u)
+          AGE_R_FLAGS=""
+          for k in $ALL_RECIPIENTS; do
+            AGE_R_FLAGS="$AGE_R_FLAGS -r $k"
+          done
+
+          # Re-encrypt comin-github-token.age for ALL current recipients.
+          # shellcheck disable=SC2086
+          printf '%s' "$GH_PAT" | age $AGE_R_FLAGS -a \
             > nixos/secrets/comin-github-token.age
 
-          # tailscale-authkey.age — write placeholder; operator must
-          # re-encrypt with real key via: agenix -e nixos/secrets/tailscale-authkey.age
-          echo "::warning::tailscale-authkey.age written with placeholder. Re-encrypt with real Tailscale key after deploy."
-          printf 'PLACEHOLDER_REPLACE_WITH_REAL_KEY' \
-            | age -r "$VM_AGE_PUBKEY" -a > nixos/secrets/tailscale-authkey.age
+          # tailscale-authkey.age — only write a placeholder if it doesn't
+          # already exist. Otherwise the existing operator-managed encrypted
+          # blob is left intact (other hosts retain access). The new host
+          # will not be able to decrypt this secret until the operator
+          # re-encrypts with `agenix -e nixos/secrets/tailscale-authkey.age`.
+          if [ ! -s nixos/secrets/tailscale-authkey.age ]; then
+            echo "::warning::tailscale-authkey.age did not exist — writing placeholder. Re-encrypt with real Tailscale key after deploy."
+            # shellcheck disable=SC2086
+            printf 'PLACEHOLDER_REPLACE_WITH_REAL_KEY' \
+              | age $AGE_R_FLAGS -a > nixos/secrets/tailscale-authkey.age
+          else
+            echo "::warning::tailscale-authkey.age left unchanged. ${GATEWAY_NAME} cannot decrypt it until operator re-encrypts with all current recipients."
+          fi
 
           # ── Commit secrets back to main ───────────────────────────────
           git config user.name  "github-actions[bot]"
@@ -273,7 +349,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No secrets changes to commit"
           else
-            git commit -m "chore: rotate agenix host key for gw1 (Option A) [skip ci]"
+            git commit -m "chore: rotate agenix host key for ${GATEWAY_NAME} (Option A) [skip ci]"
             git push \
               "https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git" \
               HEAD:main
@@ -339,18 +415,17 @@ jobs:
           ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
         run: |
           set -euxo pipefail
-          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
           if ! az deployment sub create \
-            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --location "${DEPLOYMENT_LOCATION}" \
             --template-file infra/workload.bicep \
-            --parameters "infra/environments/${ENV}-workload.bicepparam" \
-            --name "deploy-${{ env.PROJECT_NAME }}"; then
+            --parameters "infra/environments/${ENV_NAME}-workload.bicepparam" \
+            --name "${WORKLOAD_DEPLOYMENT}"; then
             echo "::error::Bicep deployment failed. Fetching error details..."
             az deployment sub show \
-              --name "deploy-${{ env.PROJECT_NAME }}" \
+              --name "${WORKLOAD_DEPLOYMENT}" \
               --query 'properties.error' -o json || true
             az deployment operation sub list \
-              --name "deploy-${{ env.PROJECT_NAME }}" \
+              --name "${WORKLOAD_DEPLOYMENT}" \
               --query "[?properties.statusCode != 'OK'].{resource: properties.targetResource.resourceName, status: properties.statusCode, message: properties.statusMessage.error.message}" \
               -o table || true
             exit 1
@@ -360,7 +435,7 @@ jobs:
         run: |
           set -euxo pipefail
           az deployment sub show \
-            --name "deploy-${{ env.PROJECT_NAME }}" \
+            --name "${WORKLOAD_DEPLOYMENT}" \
             --query properties.outputs \
             --output table
 
@@ -370,8 +445,8 @@ jobs:
           set -euo pipefail
           MAX_ATTEMPTS=30
           POLL_INTERVAL=10
-          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
-          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-${GATEWAY_NAME}-${DEPLOYMENT_LOCATION}"
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${DEPLOYMENT_LOCATION}"
           display="unknown"
           for i in $(seq 1 $MAX_ATTEMPTS); do
             agent_status=$(az vm get-instance-view \
@@ -405,8 +480,8 @@ jobs:
           echo "::add-mask::$GH_PAT"
           echo "::add-mask::$HOSTKEY_PRIV_B64"
 
-          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
-          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-${GATEWAY_NAME}-${DEPLOYMENT_LOCATION}"
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${DEPLOYMENT_LOCATION}"
           TOKEN_B64=$(printf '%s' "$GH_PAT" | base64 -w 0)
           echo "::add-mask::$TOKEN_B64"
 

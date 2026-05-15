@@ -44,7 +44,7 @@ env:
   PROJECT_NAME: plaz
 
 concurrency:
-  group: landing-zone-plaz-southcentralus
+  group: landing-zone-${{ github.event.inputs.environment || 'plaz' }}
   cancel-in-progress: false
 
 jobs:
@@ -83,17 +83,23 @@ jobs:
         run: |
           set -euxo pipefail
           ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
+          # Derive deployment location from the bicepparam file so the
+          # subscription deployment record lands in the right region.
+          PARAM_LOCATION=$(grep -E "^param location\s*=" \
+            "infra/environments/${ENV}-landing-zone.bicepparam" \
+            | sed -E "s/^param location\s*=\s*'([^']+)'.*/\1/")
+          LOCATION="${PARAM_LOCATION:-${{ env.DEPLOYMENT_LOCATION }}}"
           if ! az deployment sub create \
-            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --location "${LOCATION}" \
             --template-file infra/landing-zone.bicep \
             --parameters "infra/environments/${ENV}-landing-zone.bicepparam" \
-            --name "landing-zone-${{ env.PROJECT_NAME }}"; then
+            --name "landing-zone-${ENV}"; then
             echo "::error::Landing zone deployment failed. Fetching error details..."
             az deployment sub show \
-              --name "landing-zone-${{ env.PROJECT_NAME }}" \
+              --name "landing-zone-${ENV}" \
               --query 'properties.error' -o json || true
             az deployment operation sub list \
-              --name "landing-zone-${{ env.PROJECT_NAME }}" \
+              --name "landing-zone-${ENV}" \
               --query "[?properties.statusCode != 'OK'].{resource: properties.targetResource.resourceName, status: properties.statusCode, message: properties.statusMessage.error.message}" \
               -o table || true
             exit 1
@@ -101,25 +107,28 @@ jobs:
 
       - name: Show Outputs
         run: |
+          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
           az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "landing-zone-${ENV}" \
             --query properties.outputs \
             --output table
 
       - name: Job summary
         if: always()
         run: |
+          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
           {
             echo "### landing-zone summary"
             echo
             KV=$(az deployment sub show \
-              --name "landing-zone-${{ env.PROJECT_NAME }}" \
+              --name "landing-zone-${ENV}" \
               --query 'properties.outputs.keyVaultName.value' -o tsv 2>/dev/null || echo 'n/a')
             SUBNET=$(az deployment sub show \
-              --name "landing-zone-${{ env.PROJECT_NAME }}" \
+              --name "landing-zone-${ENV}" \
               --query 'properties.outputs.gatewaySubnetId.value' -o tsv 2>/dev/null || echo 'n/a')
             echo "| Field | Value |"
             echo "|-------|-------|"
+            echo "| Environment | \`${ENV}\` |"
             echo "| Key Vault | \`${KV}\` |"
             echo "| Gateway subnet | \`${SUBNET}\` |"
             echo "| Trigger | \`${{ github.event_name }}\` |"

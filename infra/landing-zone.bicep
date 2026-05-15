@@ -22,6 +22,9 @@ param location string
 @description('Project name used in resource naming')
 param projectName string = 'plaz'
 
+@description('Short region code for region-uniquified resource names (e.g. scus, sea). Used for the globally-unique Key Vault name.')
+param regionCode string
+
 @description('VNET address space')
 param vnetAddressPrefix string = '192.168.85.0/24'
 
@@ -118,6 +121,7 @@ module keyVault 'modules/keyvault/main.bicep' = {
   params: {
     location: location
     projectName: projectName
+    regionCode: regionCode
     ciServicePrincipalObjectId: ciServicePrincipalObjectId
     tags: tags
   }

@@ -96,11 +96,23 @@ jobs:
           NIXOS_IMAGE_ID: ''
           CUSTOM_DATA_B64: ''
         run: |
-          az deployment sub what-if \
-            --location "${{ env.DEPLOYMENT_LOCATION }}" \
-            --template-file infra/workload.bicep \
-            --parameters infra/environments/plaz-workload.bicepparam \
-            --name "whatif-${{ github.run_id }}"
+          set -euo pipefail
+          # Validate every workload parameter file so region-specific
+          # mistakes (e.g. Singapore) are caught in CI, not at deploy time.
+          for PARAM_FILE in infra/environments/*-workload.bicepparam; do
+            ENV_NAME=$(basename "$PARAM_FILE" -workload.bicepparam)
+            # Parse 'location' from the bicepparam file for the --location arg.
+            LOCATION=$(grep -E "^param location\s*=" "$PARAM_FILE" \
+              | sed -E "s/^param location\s*=\s*'([^']+)'.*/\1/")
+            LOCATION="${LOCATION:-${{ env.DEPLOYMENT_LOCATION }}}"
+            echo "::group::what-if ${ENV_NAME} (${LOCATION})"
+            az deployment sub what-if \
+              --location "${LOCATION}" \
+              --template-file infra/workload.bicep \
+              --parameters "${PARAM_FILE}" \
+              --name "whatif-${{ github.run_id }}-${ENV_NAME}"
+            echo "::endgroup::"
+          done
 
   # ------------------------------------------------------------------
   # Validate NixOS flake (always runs so it can be a required check;

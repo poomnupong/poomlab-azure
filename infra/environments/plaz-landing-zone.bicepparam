@@ -2,6 +2,7 @@ using '../landing-zone.bicep'
 
 param location                   = 'southcentralus'
 param projectName                = 'plaz'
+param regionCode                 = 'scus'
 param vnetAddressPrefix          = '192.168.85.0/24'
 param gatewaySubnetPrefix        = '192.168.85.0/28'
 param defaultSubnetPrefix        = '192.168.85.16/28'

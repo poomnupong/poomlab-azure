@@ -20,6 +20,9 @@ param location string
 @description('Project name used in resource naming')
 param projectName string = 'plaz'
 
+@description('Gateway short name (e.g. gw1, gw2). Must be unique per gateway VM across regions.')
+param gatewayName string = 'gw1'
+
 @description('VM size for the NixOS gateway VM')
 param vmSize string = 'Standard_D4ads_v7'
 
@@ -64,6 +67,7 @@ module compute 'modules/compute/main.bicep' = {
   params: {
     location: location
     projectName: projectName
+    gatewayName: gatewayName
     vmSize: vmSize
     adminUsername: adminUsername
     adminSshPublicKey: adminSshPublicKey

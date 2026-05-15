@@ -2,6 +2,7 @@ using '../landing-zone.bicep'
 
 param location                   = 'southeastasia'
 param projectName                = 'plaz'
+param regionCode                 = 'sea'
 param vnetAddressPrefix          = '192.168.86.0/24'
 param gatewaySubnetPrefix        = '192.168.86.0/28'
 param defaultSubnetPrefix        = '192.168.86.16/28'
