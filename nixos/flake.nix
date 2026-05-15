@@ -81,19 +81,21 @@
         ];
       };
 
-      # Future VMs: add entries here, e.g.:
-      # vm2 = nixpkgs-stable.lib.nixosSystem {
-      #   inherit system;
-      #   specialArgs = { inherit pkgs-unstable; };
-      #   modules = [
-      #     ./hosts/vm2/default.nix
-      #     ./hosts/vm2/hardware.nix
-      #     comin.nixosModules.comin
-      #     ./modules/comin.nix
-      #     agenix.nixosModules.default
-      #     ./modules/agenix.nix
-      #   ];
-      # };
+      # ── gw2: NixOS gateway / NVA VM (Singapore) ───────────────────
+      gw2 = nixpkgs-stable.lib.nixosSystem {
+        inherit system;
+        specialArgs = { inherit pkgs-unstable; };
+        modules = [
+          ./hosts/gw2/default.nix
+          ./hosts/gw2/hardware.nix
+          # Comin GitOps pull-based deployment
+          comin.nixosModules.comin
+          ./modules/comin.nix
+          # Agenix encrypted secrets
+          agenix.nixosModules.default
+          ./modules/agenix.nix
+        ];
+      };
 
       # ── plaz-smoke: ephemeral Tier 2 CI smoke-test host ──────────────
       # Never deployed to production. Exists only so Comin can find a valid
