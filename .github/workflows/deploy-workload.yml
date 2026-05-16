@@ -27,6 +27,10 @@ on:
         description: 'Parameter file to use (without extension)'
         required: true
         default: 'plaz'
+  workflow_run:
+    workflows: ["global"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   id-token: write   # OIDC
@@ -62,7 +66,9 @@ jobs:
   deploy:
     name: Deploy
     needs: validate
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     environment: production
     env:
