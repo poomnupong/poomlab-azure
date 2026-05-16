@@ -200,17 +200,19 @@ jobs:
           # likely to be a transient/accidental partial commit than an intent
           # to teardown a still-enabled region; deleting active infra here
           # would be destructive and surprising.
-          MISSING_PARAMS=""
+          MISSING_PARAMS=()
           while IFS=$'\t' read -r env_name location; do
             [ -z "$env_name" ] && continue
             if [ ! -f "infra/environments/${env_name}-landing-zone.bicepparam" ] || [ ! -f "infra/environments/${env_name}-workload.bicepparam" ]; then
-              MISSING_PARAMS+="${env_name} (${location})\n"
+              MISSING_PARAMS+=("${env_name} (${location})")
             fi
           done < <(jq -r '.regions[]? | select(.enabled == true) | [.env, .location] | @tsv' infra/regions.json)
 
-          if [ -n "$MISSING_PARAMS" ]; then
+          if [ "${#MISSING_PARAMS[@]}" -gt 0 ]; then
             echo "::error::Enabled region(s) in infra/regions.json are missing required bicepparam files:"
-            printf '%b' "$MISSING_PARAMS" | sed 's/^/::error::  - /'
+            for entry in "${MISSING_PARAMS[@]}"; do
+              echo "::error::  - ${entry}"
+            done
             echo "::error::Expected infra/environments/<env>-{landing-zone,workload}.bicepparam for every enabled region. Disable the region (enabled=false) to teardown, or add the missing files."
             exit 1
           fi
