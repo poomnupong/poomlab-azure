@@ -97,6 +97,13 @@ jobs:
             exit 1
           fi
 
+          # 'all' is a reserved sentinel meaning "deploy every enabled region";
+          # ensure no real region entry collides with it.
+          if jq -e '.regions[] | select(.env == "all")' infra/regions.json >/dev/null; then
+            echo "::error::infra/regions.json must not contain a region with env=\"all\" (reserved sentinel)"
+            exit 1
+          fi
+
           # When REQUESTED_ENV is 'all' (push or default dispatch), select
           # every region with enabled=true. Otherwise select the single
           # matching entry regardless of enabled state.
@@ -104,14 +111,13 @@ jobs:
             MATRIX=$(jq -c '[.regions[] | select(.enabled == true) | {env, location, gateway, regionCode}]' infra/regions.json)
           else
             MATRIX=$(jq -c --arg env "$REQUESTED_ENV" '[.regions[] | select(.env == $env) | {env, location, gateway, regionCode}]' infra/regions.json)
-            COUNT=$(echo "$MATRIX" | jq 'length')
-            if [ "$COUNT" -eq 0 ]; then
-              echo "::error::Requested environment '$REQUESTED_ENV' not found in infra/regions.json"
-              exit 1
-            fi
           fi
 
           COUNT=$(echo "$MATRIX" | jq 'length')
+          if [ "$REQUESTED_ENV" != "all" ] && [ "$COUNT" -eq 0 ]; then
+            echo "::error::Requested environment '$REQUESTED_ENV' not found in infra/regions.json"
+            exit 1
+          fi
           echo "Selected $COUNT region(s):"
           echo "$MATRIX" | jq -r '.[] | "  - \(.env) (\(.location), \(.gateway))"'
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
