@@ -1,4 +1,4 @@
-# gw3 — Azure Gen2 hardware configuration (Japan East region)
+# gw3 — Azure Gen2 hardware configuration (Korea Central region)
 #
 # Hardware profile for an Azure Hyper-V Gen2 VM with NVMe + SCSI support.
 # Identical to gw1/gw2 hardware profile — same Azure VM generation.

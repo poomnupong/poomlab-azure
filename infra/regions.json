@@ -51,10 +51,10 @@
       "enabled": true
     },
     {
-      "env": "plaz-jpe",
-      "location": "japaneast",
+      "env": "plaz-krc",
+      "location": "koreacentral",
       "gateway": "gw3",
-      "regionCode": "jpe",
+      "regionCode": "krc",
       "enabled": true
     }
   ]

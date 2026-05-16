@@ -1,6 +1,6 @@
-# gw3 — NixOS gateway / NVA host (Japan East region)
+# gw3 — NixOS gateway / NVA host (Korea Central region)
 #
-# Host-specific configuration for the Azure NixOS gateway VM in japaneast.
+# Host-specific configuration for the Azure NixOS gateway VM in koreacentral.
 # Mirrors gw1/gw2 with a different hostname. Import shared modules from
 # ../../modules/ and add host-specific overrides here.
 #

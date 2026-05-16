@@ -38,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea, plaz-jpe) to deploy just that one — works even if the region is disabled.'
+        description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea, plaz-krc) to deploy just that one — works even if the region is disabled.'
         required: true
         default: 'all'
   push:
@@ -141,7 +141,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.discover.outputs.matrix) }}
     # Per-environment serialisation: a re-run for the same env queues behind
-    # any in-flight deploy, but distinct envs (plaz, plaz-sea, plaz-jpe) run
+    # any in-flight deploy, but distinct envs (plaz, plaz-sea, plaz-krc) run
     # in parallel.
     concurrency:
       group: landing-zone-${{ matrix.env }}

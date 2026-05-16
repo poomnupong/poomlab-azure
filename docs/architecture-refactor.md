@@ -203,7 +203,7 @@ Each phase is one PR. Each PR is independently revertible.
 
 ## Adding a new region
 
-1. Allocate a non-overlapping VNET `/24` (e.g. `192.168.87.0/24` for plaz-jpe).
+1. Allocate a non-overlapping VNET `/24` (e.g. `192.168.87.0/24` for plaz-krc).
 2. Create `infra/environments/<env>-landing-zone.bicepparam` with the new
    `location` and address prefixes.
 3. Create `infra/environments/<env>-workload.bicepparam` with the new

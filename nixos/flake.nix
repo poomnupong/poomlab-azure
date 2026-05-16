@@ -97,7 +97,7 @@
         ];
       };
 
-      # ── gw3: NixOS gateway / NVA VM (Japan East) ──────────────────
+      # ── gw3: NixOS gateway / NVA VM (Korea Central) ───────────────
       gw3 = nixpkgs-stable.lib.nixosSystem {
         inherit system;
         specialArgs = { inherit pkgs-unstable; };

@@ -1,6 +1,6 @@
 using '../landing-zone.bicep'
 
-param location                   = 'japaneast'
+param location                   = 'koreacentral'
 param projectName                = 'plaz'
 param vnetAddressPrefix          = '192.168.87.0/24'
 param gatewaySubnetPrefix        = '192.168.87.0/28'
