@@ -50,6 +50,10 @@ permissions:
 env:
   PROJECT_NAME: plaz
   SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  # Azure subscription-deployment records are location-pinned at creation time.
+  # Keep this metadata location stable across all regions to avoid
+  # InvalidDeploymentLocation on re-runs.
+  DEPLOYMENT_RECORD_LOCATION: southcentralus
 
 # Workflow-level concurrency is intentionally absent. Per-environment
 # serialisation is enforced at the deploy-job level via a matrix-aware
@@ -212,7 +216,7 @@ jobs:
               echo "Landing zone not found for $ENV_NAME — deploying now..."
             fi
             if ! az deployment sub create \
-              --location "$DEPLOYMENT_LOCATION" \
+              --location "$DEPLOYMENT_RECORD_LOCATION" \
               --template-file infra/landing-zone.bicep \
               --parameters "infra/environments/${ENV_NAME}-landing-zone.bicepparam" \
               --name "$LANDING_ZONE_DEPLOYMENT"; then
@@ -523,8 +527,8 @@ jobs:
             # Rebase on top of any commits pushed by earlier matrix legs
             # (e.g. plaz pushes first; plaz-jpe runs next with a stale HEAD).
             REMOTE_URL="https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git"
-            git fetch --no-tags "$REMOTE_URL" main
-            if ! git rebase origin/main; then
+            git fetch --no-tags "$REMOTE_URL" main:refs/remotes/origin/main
+            if ! git rebase refs/remotes/origin/main; then
               echo "::error::Rebase failed — this usually means two matrix legs modified the same file concurrently (e.g. secrets.nix). Abort the rebase, resolve conflicts locally, and re-push manually."
               git rebase --abort || true
               exit 1
@@ -611,7 +615,7 @@ jobs:
         run: |
           set -euxo pipefail
           if ! az deployment sub create \
-            --location "${DEPLOYMENT_LOCATION}" \
+            --location "${DEPLOYMENT_RECORD_LOCATION}" \
             --template-file infra/workload.bicep \
             --parameters "infra/environments/${ENV_NAME}-workload.bicepparam" \
             --name "${WORKLOAD_DEPLOYMENT}"; then
