@@ -197,16 +197,21 @@ jobs:
           # infra/regions.json so secondary regions (plaz-sea, plaz-jpe,
           # ...) consume the image natively rather than via slow
           # cross-region reads from the primary. The primary region is
-          # always included (it is enabled=true in regions.json and is
-          # also where the image version is staged).
+          # always included even if all regions.json entries are disabled
+          # — image-bake must still publish *somewhere*, and the primary
+          # is where Tier 2 smoke and the bicep deployment record live.
           if [ ! -f infra/regions.json ]; then
             echo "::error::infra/regions.json is missing"
             exit 1
           fi
           # Gather enabled locations, then ensure the primary
-          # DEPLOYMENT_LOCATION is present even if accidentally omitted.
+          # DEPLOYMENT_LOCATION is present even if all regions.json entries
+          # are disabled.
           mapfile -t REGIONS < <(jq -r '.regions[] | select(.enabled == true) | .location' infra/regions.json)
-          if ! printf '%s\n' "${REGIONS[@]}" | grep -qx "${{ env.DEPLOYMENT_LOCATION }}"; then
+          if [ "${#REGIONS[@]}" -eq 0 ]; then
+            echo "::warning::No enabled regions in infra/regions.json; publishing image only to the primary region (${{ env.DEPLOYMENT_LOCATION }})."
+          fi
+          if ! printf '%s\n' "${REGIONS[@]:-}" | grep -qx "${{ env.DEPLOYMENT_LOCATION }}"; then
             REGIONS+=("${{ env.DEPLOYMENT_LOCATION }}")
           fi
           # Deduplicate, preserving order.
