@@ -523,7 +523,7 @@ jobs:
             # Rebase on top of any commits pushed by earlier matrix legs
             # (e.g. plaz pushes first; plaz-jpe runs next with a stale HEAD).
             REMOTE_URL="https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git"
-            git fetch --no-tags "$REMOTE_URL" main:refs/remotes/origin/main
+            git fetch --no-tags "$REMOTE_URL" main
             if ! git rebase origin/main; then
               echo "::error::Rebase failed — this usually means two matrix legs modified the same file concurrently (e.g. secrets.nix). Abort the rebase, resolve conflicts locally, and re-push manually."
               git rebase --abort || true
