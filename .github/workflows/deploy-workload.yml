@@ -326,11 +326,53 @@ jobs:
             echo "::error::Could not resolve Key Vault name from ${GLOBAL_DEPLOYMENT}. Run the global workflow first."
             exit 1
           fi
-          az keyvault secret set \
-            --vault-name "$KV_NAME" \
-            --name "${GATEWAY_NAME}-ssh-host-ed25519-key" \
-            --value "$PRIVKEY" \
-            --output none
+          KV_RG=$(az deployment sub show \
+            --name "${GLOBAL_DEPLOYMENT}" \
+            --query 'properties.outputs.keyVaultResourceGroup.value' -o tsv)
+
+          # JIT-allowlist this runner's egress IP. The Key Vault firewall
+          # defaults to Deny (see infra/modules/keyvault/main.bicep) so the
+          # GitHub-hosted runner cannot reach the data plane without this
+          # rule. The cleanup step below (if: always()) removes it again.
+          # Export to GITHUB_ENV so cleanup runs even if a later step fails.
+          RUNNER_IP=$(curl -fsS --retry 3 --retry-delay 2 https://api.ipify.org)
+          if ! [[ "$RUNNER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Could not determine runner egress IP (got: '$RUNNER_IP')"
+            exit 1
+          fi
+          echo "Runner egress IP: $RUNNER_IP"
+          echo "KV_NAME=$KV_NAME"   >> "$GITHUB_ENV"
+          echo "KV_RG=$KV_RG"       >> "$GITHUB_ENV"
+          echo "RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+
+          az keyvault network-rule add \
+            --name "$KV_NAME" --resource-group "$KV_RG" \
+            --ip-address "$RUNNER_IP" --output none
+
+          # Retry the first data-plane call until the firewall rule has
+          # propagated. Empirically this takes <30s but is not advertised
+          # by Azure; poll instead of using a fixed sleep.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if az keyvault secret set \
+                --vault-name "$KV_NAME" \
+                --name "${GATEWAY_NAME}-ssh-host-ed25519-key" \
+                --value "$PRIVKEY" \
+                --output none 2>/tmp/kv-set.err; then
+              break
+            fi
+            if ! grep -q 'Forbidden' /tmp/kv-set.err; then
+              echo "::error::Non-firewall failure writing host key:"
+              cat /tmp/kv-set.err
+              exit 1
+            fi
+            if [ "$attempt" = "10" ]; then
+              echo "::error::Key Vault firewall rule for $RUNNER_IP did not propagate after 10 attempts:"
+              cat /tmp/kv-set.err
+              exit 1
+            fi
+            echo "attempt $attempt: firewall rule not yet effective, retrying in 10s…"
+            sleep 10
+          done
           echo "Private key stored in Key Vault: $KV_NAME / ${GATEWAY_NAME}-ssh-host-ed25519-key"
 
           # ── Install age + ssh-to-age ──────────────────────────────────
@@ -475,6 +517,24 @@ jobs:
           # Cleanup key material from runner disk
           rm -rf "$KEY_DIR"
           echo "hostkey_generated=true" >> "$GITHUB_OUTPUT"
+
+      # ── Remove runner IP from Key Vault firewall ─────────────────────
+      # always() so the IP is cleaned up even if a later step in this job
+      # fails (or the run is cancelled mid-job). Guarded on $RUNNER_IP so
+      # it no-ops when the hostkey step didn't run (image unchanged).
+      - name: Revoke Key Vault firewall allowlist
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_IP:-}" ] || [ -z "${KV_NAME:-}" ] || [ -z "${KV_RG:-}" ]; then
+            echo "No KV firewall allowlist to revoke (RUNNER_IP/KV_NAME/KV_RG unset)."
+            exit 0
+          fi
+          echo "Removing $RUNNER_IP from $KV_NAME firewall…"
+          az keyvault network-rule remove \
+            --name "$KV_NAME" --resource-group "$KV_RG" \
+            --ip-address "$RUNNER_IP" --output none || \
+            echo "::warning::Failed to remove $RUNNER_IP from $KV_NAME firewall; manual cleanup may be required."
 
       # ── Deploy Infrastructure ─────────────────────────────────────────
       - name: Deploy Infrastructure
