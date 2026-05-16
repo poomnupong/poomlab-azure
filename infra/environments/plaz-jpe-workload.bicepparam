@@ -3,7 +3,7 @@ using '../workload.bicep'
 param location                = 'japaneast'
 param projectName             = 'plaz'
 param gatewayName             = 'gw3'
-param vmSize                  = 'Standard_D4ads_v7'
+param vmSize                  = 'Standard_D4as_v5'
 param adminUsername           = 'azureuser'
 param adminSshPublicKey       = readEnvironmentVariable('ADMIN_SSH_PUBLIC_KEY')
 

@@ -175,8 +175,11 @@ jobs:
             echo "GATEWAY_NAME=${{ matrix.gateway }}"
             echo "REGION_CODE=${{ matrix.regionCode }}"
             echo "GLOBAL_DEPLOYMENT=global-${{ env.PROJECT_NAME }}"
-            echo "LANDING_ZONE_DEPLOYMENT=landing-zone-${{ matrix.env }}"
-            echo "WORKLOAD_DEPLOYMENT=deploy-${{ matrix.env }}"
+            # Keep subscription deployment record names unique per metadata
+            # location to avoid InvalidDeploymentLocation when legacy records
+            # with the old names exist in other regions.
+            echo "LANDING_ZONE_DEPLOYMENT=landing-zone-${{ matrix.env }}-${{ env.DEPLOYMENT_RECORD_LOCATION }}"
+            echo "WORKLOAD_DEPLOYMENT=deploy-${{ matrix.env }}-${{ env.DEPLOYMENT_RECORD_LOCATION }}"
           } >> "$GITHUB_ENV"
           echo "ENV_NAME=${{ matrix.env }}  LOCATION=${{ matrix.location }}  GATEWAY=${{ matrix.gateway }}  REGION=${{ matrix.regionCode }}"
 
