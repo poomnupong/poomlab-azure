@@ -1,17 +1,13 @@
 # secrets.nix — Agenix recipients list
 #
 # AUTO-POPULATED by deploy-workload.yml (Phase 5, Option A).
-# Host key is generated in CI, stored in Key Vault, injected
+# Host keys are generated in CI, stored in Key Vault, injected
 # via cloud-init customData on VM creation.
 # Do not edit key values manually.
 #
 let
   # ── VM host keys ────────────────────────────────────────────────
-  gw1 = "age1rkh86t00gnp86yqkk6rhrar9s8vq5vejgegslhxzccjrwl3ceqxqq8a79a";
-
-  # gw2 host key — will be auto-populated by deploy-workload.yml on
-  # first deployment to Singapore (southeastasia).
-  # gw2 = "age1...";
+  gw1 = "age1z9agtp63vyme64qqglykw95mky5c4ayhq08qmqv83tx0ahvs2srqjy084u";
 
   allSystems = [ gw1 ];
 in
