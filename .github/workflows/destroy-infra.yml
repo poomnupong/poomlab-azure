@@ -56,10 +56,16 @@ jobs:
           LOCATION="${{ env.DEPLOYMENT_LOCATION }}"
 
           # Order matters: compute first (VMs hold references to network/gallery
-          # resources), then gallery, network, monitoring.
+          # resources), then gallery, network, monitoring. Key Vault RG is
+          # project-wide and pinned to the primary region (Option B); it is
+          # included here so a `destroy-infra` from the primary region leaves
+          # nothing behind. NOTE: the Key Vault itself has soft-delete enabled
+          # — recreate it under the same name within the retention window or
+          # use `az keyvault purge` if you need to free the name immediately.
           RESOURCE_GROUPS=(
             "rg-${PROJECT}-compute-${LOCATION}"
             "rg-${PROJECT}-gallery-${LOCATION}"
+            "rg-${PROJECT}-keyvault-${LOCATION}"
             "rg-${PROJECT}-network-${LOCATION}"
             "rg-${PROJECT}-monitoring-${LOCATION}"
           )

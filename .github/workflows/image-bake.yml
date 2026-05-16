@@ -154,27 +154,27 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify Gallery exists
-        # The gallery is managed by landing-zone.yml. Read the actual gallery
-        # and image-definition names from the landing-zone deployment outputs
+        # The gallery is managed by global.yml. Read the actual gallery
+        # and image-definition names from the global deployment outputs
         # rather than hard-coding (the bicep names them gal_<project> /
-        # nixos-azimage). If either is missing the user must run landing-zone.
+        # nixos-azimage). If either is missing the user must run global.
         run: |
           set -euxo pipefail
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
           GALLERY_NAME=$(az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "global-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.galleryName.value' -o tsv) || {
-            echo "::error::landing-zone deployment not found. Run the landing-zone workflow first."; exit 1;
+            echo "::error::global deployment not found. Run the global workflow first."; exit 1;
           }
           IMAGE_DEF=$(az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "global-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.imageDefinitionName.value' -o tsv) || {
-            echo "::error::landing-zone deployment not found. Run the landing-zone workflow first."; exit 1;
+            echo "::error::global deployment not found. Run the global workflow first."; exit 1;
           }
           # `az ... -o tsv` exits 0 with empty output when the queried output
           # is missing/null, so guard against that explicitly.
           if [ -z "$GALLERY_NAME" ] || [ -z "$IMAGE_DEF" ]; then
-            echo "::error::Could not read galleryName/imageDefinitionName from landing-zone deployment outputs (got GALLERY_NAME='$GALLERY_NAME', IMAGE_DEF='$IMAGE_DEF'). Re-run the landing-zone workflow."
+            echo "::error::Could not read galleryName/imageDefinitionName from global deployment outputs (got GALLERY_NAME='$GALLERY_NAME', IMAGE_DEF='$IMAGE_DEF'). Re-run the global workflow."
             exit 1
           fi
           az sig image-definition show \
@@ -182,7 +182,7 @@ jobs:
             --gallery-name "$GALLERY_NAME" \
             --gallery-image-definition "$IMAGE_DEF" \
             -o none \
-          || { echo "::error::Gallery image definition '$IMAGE_DEF' not found in $GALLERY_RG/$GALLERY_NAME. Run the landing-zone workflow first."; exit 1; }
+          || { echo "::error::Gallery image definition '$IMAGE_DEF' not found in $GALLERY_RG/$GALLERY_NAME. Run the global workflow first."; exit 1; }
 
       - name: Download VHD artifact
         uses: actions/download-artifact@v4.3.0
@@ -206,10 +206,10 @@ jobs:
 
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
           GALLERY_NAME=$(az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "global-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.galleryName.value' -o tsv)
           IMAGE_DEF=$(az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "global-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.imageDefinitionName.value' -o tsv)
 
           # Idempotent: skip if version already exists
@@ -388,10 +388,10 @@ jobs:
 
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
           GALLERY_NAME=$(az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "global-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.galleryName.value' -o tsv)
           IMAGE_DEF=$(az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "global-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.imageDefinitionName.value' -o tsv)
 
           IMAGE_ID=$(az sig image-version show \
@@ -645,10 +645,10 @@ jobs:
 
           GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${{ env.DEPLOYMENT_LOCATION }}"
           GALLERY_NAME=$(az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "global-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.galleryName.value' -o tsv)
           IMAGE_DEF=$(az deployment sub show \
-            --name "landing-zone-${{ env.PROJECT_NAME }}" \
+            --name "global-${{ env.PROJECT_NAME }}" \
             --query 'properties.outputs.imageDefinitionName.value' -o tsv)
 
           IMAGE_VERSION_ID=$(az sig image-version show \

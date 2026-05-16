@@ -19,11 +19,11 @@ Resources are organized into purpose-specific resource groups following Azure Cl
 
 | Resource Group | Purpose | Contents |
 |---|---|---|
-| `rg-plaz-monitoring-<region>` | Monitoring & diagnostics | Log Analytics workspace, diagnostic settings |
-| `rg-plaz-network-<region>` | Networking | VNETs, subnets, NSGs, public IPs, route tables |
-| `rg-plaz-gallery-<region>` | Compute Gallery | Azure Compute Gallery, image definitions, image versions |
-| `rg-plaz-keyvault-<region>` | Key Vault | Key Vault `kv-plaz-scus` (SSH host keys, RBAC for CI SP) |
-| `rg-plaz-compute-<region>` | Compute workloads | VMs, disks, NICs |
+| `rg-plaz-monitoring-<region>` | Monitoring & diagnostics (per region) | Log Analytics workspace, diagnostic settings |
+| `rg-plaz-network-<region>` | Networking (per region) | VNETs, subnets, NSGs, public IPs, route tables |
+| `rg-plaz-gallery-southcentralus` | Compute Gallery (project-wide, primary region only) | Azure Compute Gallery, image definitions; image versions are replicated to other regions |
+| `rg-plaz-keyvault-southcentralus` | Key Vault (project-wide, primary region only) | Key Vault `kv-plaz-scus` — SSH host keys for every host in every region, RBAC for CI SP |
+| `rg-plaz-compute-<region>` | Compute workloads (per region) | VMs, disks, NICs |
 
 ### Naming Convention
 
@@ -92,7 +92,8 @@ Each host under `nixos/hosts/<vmname>/` is self-contained — `default.nix` impo
 |---|---|---|---|
 | `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | Validation only. Bicep lint + NixOS flake check. |
 | `image-bake` | `.github/workflows/image-bake.yml` | Saturday 14:00 UTC + `nixos/**`/`image-bake/**` changes + manual | Builds baked NixOS image with Comin pre-installed. Tier 1 QEMU smoke + Tier 2 real-Azure smoke. Tags `blessed=true` on success. |
-| `landing-zone` | `.github/workflows/landing-zone.yml` | Manual + platform Bicep path changes | Deploys platform resources: monitoring, VNET/NSGs, Compute Gallery, Key Vault. |
+| `global` | `.github/workflows/global.yml` | Manual + global Bicep path changes | Deploys project-wide shared services (Compute Gallery, Key Vault) once for the whole project, region-pinned to the primary region. |
+| `landing-zone` | `.github/workflows/landing-zone.yml` | Manual + regional Bicep path changes | Deploys regional platform resources (monitoring, VNET/NSGs) — one deployment per region. |
 | `deploy-workload` | `.github/workflows/deploy-workload.yml` | Push to `main` on `infra/**` + manual | Deploys gw1. Resolves newest `blessed=true` image. Option A agenix key delivery via cloud-init. No SSH bootstrap. |
 | `comin-status` | `.github/workflows/comin-status.yml` | Daily + manual | Health check — Comin status on all VMs. |
 | `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly Monday 08:00 UTC + manual | Updates `nixos/flake.lock` and `image-bake/flake.lock`, opens PR. |
@@ -173,7 +174,7 @@ Go to **Settings → Secrets and variables → Actions → Secrets** (or use the
 | `AZURE_SUBSCRIPTION_ID` | all Azure workflows | Target subscription ID |
 | `ADMIN_SSH_PUBLIC_KEY` | `deploy-workload`, `ci-pr` | SSH public key injected into VM `authorized_keys` |
 | `GH_PAT` | `update-flake-lock`, `deploy-workload` | Fine-grained PAT (Contents + Pull requests + Commit statuses, R/W) |
-| `CI_SP_OBJECT_ID` | `landing-zone` | Object ID of CI service principal for Key Vault Secrets Officer. Get: `az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv` |
+| `CI_SP_OBJECT_ID` | `global` | Object ID of CI service principal for Key Vault Secrets Officer. Get: `az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv` |
 
 See [docs/secrets.md](docs/secrets.md) for full setup instructions for each secret.
 
@@ -193,19 +194,22 @@ gh secret set CI_SP_OBJECT_ID --body "$CI_SP_OID"
 
 ### 3. Deploy Infrastructure
 
-The deployment flow has three steps run in order:
+The deployment flow has four steps run in order:
 
-1. **Run `landing-zone` workflow** (once, or whenever platform resources change) — deploys monitoring, VNET/NSGs, Compute Gallery, and Key Vault `kv-plaz-scus`.
+1. **Run `global` workflow** (once for the project, or when gallery / Key Vault config changes) — deploys the project-wide Compute Gallery and Key Vault `kv-plaz-scus`, region-pinned to the primary region (southcentralus).
 
-2. **Run `image-bake` workflow** — wait for a `blessed=true` gallery image version to appear. This may already have a blessed version if the schedule has run; otherwise trigger manually.
+2. **Run `landing-zone` workflow** (once per region, or whenever a region's network topology changes) — deploys monitoring + VNET/NSGs for that region.
 
-3. **Run `deploy-workload`** — deploys gw1 from the newest `blessed=true` image. Injects the SSH host key via cloud-init `customData`. Comin starts on first boot and applies the full NixOS config automatically. No SSH bootstrap required.
+3. **Run `image-bake` workflow** — wait for a `blessed=true` gallery image version to appear. This may already have a blessed version if the schedule has run; otherwise trigger manually.
+
+4. **Run `deploy-workload`** — deploys gw1 from the newest `blessed=true` image. Injects the SSH host key via cloud-init `customData`. Comin starts on first boot and applies the full NixOS config automatically. No SSH bootstrap required.
 
 ## Configuration
 
-Key parameters are split across two environment param files:
+Key parameters are split across three environment param files:
 
-- `infra/environments/plaz-landing-zone.bicepparam` — platform resources (location, project name, networking CIDRs, Key Vault settings, CI SP object ID)
-- `infra/environments/plaz-workload.bicepparam` — compute resources (VM size, admin username, SSH key, image ID, cloud-init data)
+- `infra/environments/plaz-global.bicepparam` — project-wide shared services (primary region, project name, region code for Key Vault name, CI SP object ID)
+- `infra/environments/plaz-landing-zone.bicepparam` — regional platform resources (location, project name, networking CIDRs). One file per region (also `plaz-sea-landing-zone.bicepparam`, …).
+- `infra/environments/plaz-workload.bicepparam` — compute resources (VM size, admin username, SSH key, image ID, cloud-init data). One file per region.
 
-Both files use `readEnvironmentVariable()` for secrets and dynamic values that are injected by the workflows at deploy time.
+All files use `readEnvironmentVariable()` for secrets and dynamic values that are injected by the workflows at deploy time.

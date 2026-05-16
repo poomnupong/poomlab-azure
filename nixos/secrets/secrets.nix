@@ -9,6 +9,10 @@ let
   # ── VM host keys ────────────────────────────────────────────────
   gw1 = "age1rkh86t00gnp86yqkk6rhrar9s8vq5vejgegslhxzccjrwl3ceqxqq8a79a";
 
+  # gw2 host key — will be auto-populated by deploy-workload.yml on
+  # first deployment to Singapore (southeastasia).
+  # gw2 = "age1...";
+
   allSystems = [ gw1 ];
 in
 {

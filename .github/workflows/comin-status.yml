@@ -58,14 +58,22 @@ jobs:
           nix flake check . --no-update-lock-file
 
   # ------------------------------------------------------------------
-  # Check Comin status on each VM
+  # Check Comin status on each VM (matrix over gateways/regions)
   # ------------------------------------------------------------------
-  check-gw1:
-    name: Check gw1 Comin Status
+  check-gateway:
+    name: Check ${{ matrix.gateway }} Comin Status
     needs: validate
     runs-on: ubuntu-latest
     if: >-
       needs.validate.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - gateway: gw1
+            location: southcentralus
+          - gateway: gw2
+            location: southeastasia
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -77,12 +85,12 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Check gw1 is running
+      - name: Check ${{ matrix.gateway }} is running
         id: ensure-vm
         run: |
           set -euo pipefail
-          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}"
-          VM_NAME="vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}"
+          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ matrix.location }}"
+          VM_NAME="vm-${{ env.PROJECT_NAME }}-${{ matrix.gateway }}-${{ matrix.location }}"
 
           VM_VIEW_OUTPUT=""
           VM_VIEW_EXIT=0
@@ -112,15 +120,15 @@ jobs:
             echo "vm_ready=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Query Comin status on gw1
+      - name: Query Comin status on ${{ matrix.gateway }}
         if: steps['ensure-vm'].outputs.vm_ready != 'false'
         run: |
           set -euo pipefail
 
           OUTPUT_FILE=$(mktemp)
           .github/scripts/az-run-command.sh \
-            "rg-${{ env.PROJECT_NAME }}-compute-${{ env.DEPLOYMENT_LOCATION }}" \
-            "vm-${{ env.PROJECT_NAME }}-gw1-${{ env.DEPLOYMENT_LOCATION }}" \
+            "rg-${{ env.PROJECT_NAME }}-compute-${{ matrix.location }}" \
+            "vm-${{ env.PROJECT_NAME }}-${{ matrix.gateway }}-${{ matrix.location }}" \
             $'set -eo pipefail\nset +u; source /etc/profile; set -u\necho "=== Comin service status ==="\nsystemctl is-active comin || echo "comin service is NOT active"\necho ""\necho "=== Comin journal (last 20 lines) ==="\njournalctl -u comin --no-pager -n 20 2>/dev/null || echo "No comin journal entries"\necho ""\necho "=== Current NixOS generation ==="\nreadlink /nix/var/nix/profiles/system || echo "unknown"\necho ""\necho "STATUS_CHECK_COMPLETE"' \
             > "$OUTPUT_FILE"
 
@@ -136,7 +144,7 @@ jobs:
 
           # Check if comin is active
           if echo "$STDOUT" | grep -q "comin service is NOT active"; then
-            echo "::warning::Comin service is not active on gw1. Check deploy-workload logs."
+            echo "::warning::Comin service is not active on ${{ matrix.gateway }}. Check deploy-workload logs."
           else
-            echo "✅ Comin is active and healthy on gw1."
+            echo "✅ Comin is active and healthy on ${{ matrix.gateway }}."
           fi

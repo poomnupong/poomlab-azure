@@ -25,12 +25,13 @@ on:
     workflows:
       - "ci-pr"
       - "image-bake"
+      - "global"
       - "landing-zone"
       - "deploy-workload"
     types: [completed]
     # No branches filter here — filtering is done in the job condition so that:
     #   - ci-pr / image-bake  → copilot/** branches (PR context)
-    #   - landing-zone / deploy-workload → main branch (post-merge context)
+    #   - global / landing-zone / deploy-workload → main branch (post-merge context)
 
 permissions:
   issues: write    # create and label issues

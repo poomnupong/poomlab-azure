@@ -1,13 +1,13 @@
 using '../workload.bicep'
 
-param location                = 'southcentralus'
+param location                = 'southeastasia'
 param projectName             = 'plaz'
-param gatewayName             = 'gw1'
+param gatewayName             = 'gw2'
 param vmSize                  = 'Standard_D4ads_v7'
 param adminUsername           = 'azureuser'
 param adminSshPublicKey       = readEnvironmentVariable('ADMIN_SSH_PUBLIC_KEY')
 
-// Resolved at deploy time from landing-zone-plaz deployment outputs
+// Resolved at deploy time from landing-zone-plaz-sea deployment outputs
 // and set in $GITHUB_ENV by the "Resolve landing-zone outputs" step.
 param subnetId                = readEnvironmentVariable('SUBNET_ID')
 param logAnalyticsWorkspaceId = readEnvironmentVariable('LOG_ANALYTICS_WORKSPACE_ID')

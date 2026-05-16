@@ -6,6 +6,9 @@ param location string
 @description('Project name for resource naming')
 param projectName string
 
+@description('Gateway short name used in resource naming (e.g. gw1, gw2). Each gateway VM in a project must have a distinct name across regions, since the compute resource group is region-scoped but agenix/Comin tooling distinguishes hosts by this name.')
+param gatewayName string = 'gw1'
+
 @description('VM size')
 param vmSize string
 
@@ -36,10 +39,10 @@ param tags object
 // Variables
 // =====================================================================
 
-var vmName = 'vm-${projectName}-gw1-${location}'
-var nicName = 'nic-${projectName}-gw1-${location}'
-var pipName = 'pip-${projectName}-gw1-${location}'
-var osDiskName = 'osdisk-${projectName}-gw1-${location}'
+var vmName = 'vm-${projectName}-${gatewayName}-${location}'
+var nicName = 'nic-${projectName}-${gatewayName}-${location}'
+var pipName = 'pip-${projectName}-${gatewayName}-${location}'
+var osDiskName = 'osdisk-${projectName}-${gatewayName}-${location}'
 
 // Deploy the VM only when a NixOS image version has been staged
 var hasImageVersion = !empty(trim(nixosImageId))
@@ -105,7 +108,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = if (hasImageVersion
       vmSize: vmSize
     }
     osProfile: {
-      computerName: 'gw1'
+      computerName: gatewayName
       adminUsername: adminUsername
       customData: empty(trim(customData)) ? null : customData
       linuxConfiguration: {

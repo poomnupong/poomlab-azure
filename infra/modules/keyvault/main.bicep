@@ -12,13 +12,16 @@ param location string
 @description('Project name for resource naming')
 param projectName string
 
+@description('Short region code used to keep the (globally unique) Key Vault name distinct across regions (e.g. scus, sea).')
+param regionCode string
+
 @description('Object ID of the CI service principal for Key Vault Secrets Officer role assignment. Leave empty to skip.')
 param ciServicePrincipalObjectId string = ''
 
 @description('Resource tags')
 param tags object
 
-var keyVaultName = 'kv-${projectName}-scus'
+var keyVaultName = 'kv-${projectName}-${regionCode}'
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName

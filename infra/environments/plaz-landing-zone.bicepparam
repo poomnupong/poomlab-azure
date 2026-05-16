@@ -8,7 +8,7 @@ param defaultSubnetPrefix        = '192.168.85.16/28'
 param logRetentionDays           = 30
 param sshSourceAddressPrefix     = '99.7.231.75/32'
 
-// Object ID of the CI service principal (backing AZURE_CLIENT_ID).
-// Grants Key Vault Secrets Officer so deploy-workload.yml can write
-// the generated ssh_host_ed25519_key. Leave empty to skip role assignment.
-param ciServicePrincipalObjectId = readEnvironmentVariable('CI_SP_OBJECT_ID', '')
+// Note: the project-wide Compute Gallery and Key Vault live in
+// infra/global.bicep + infra/environments/plaz-global.bicepparam, deployed
+// once by .github/workflows/global.yml. Region-uniquified names that used
+// to need `regionCode` (kv-plaz-scus) are now project-wide and managed there.

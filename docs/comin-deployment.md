@@ -105,7 +105,9 @@ nixos/secrets/
    now-present host key.
 
 **The only manual prerequisite:** set the `GH_PAT` and `CI_SP_OBJECT_ID`
-repository secrets and run `landing-zone` once before `deploy-workload`.
+repository secrets and run `global` once (creates the Compute Gallery +
+Key Vault for the whole project), then `landing-zone` once per region,
+before `deploy-workload`.
 
 ### Rotating a Secret
 
@@ -184,7 +186,8 @@ and creates an issue with a checklist for reviewing all secrets.
 | Workflow | Trigger | Purpose |
 |---|---|---|
 | `image-bake` | Saturday 14:00 UTC + `nixos/**`/`image-bake/**` changes + manual | Builds baked NixOS image, Tier 1 + Tier 2 smoke, tags `blessed=true` |
-| `landing-zone` | Manual + platform Bicep path changes | Deploys platform resources (monitoring, networking, gallery, Key Vault) |
+| `global` | Manual + global Bicep path changes | Deploys project-wide shared services (Compute Gallery, Key Vault) once for the whole project, region-pinned to the primary region |
+| `landing-zone` | Manual + regional Bicep path changes | Deploys regional platform resources (monitoring, networking) — one deployment per region |
 | `deploy-workload` | Push to `main` on `infra/**` + manual | Deploys gw1 from blessed image; injects host key via cloud-init; no SSH bootstrap |
 | `comin-status` | Daily + manual | Health check — queries Comin status on all VMs |
 | `ci-pr` | Pull request → `main` | Validation gate (Bicep lint + NixOS flake check) |
@@ -201,7 +204,8 @@ and creates an issue with a checklist for reviewing all secrets.
 4. Add `deploy-workload.yml` steps for the new VM (resolve image, generate
    host key, deploy).
 5. Add a status check job in `comin-status.yml`.
-6. Run `landing-zone` if new platform resources are needed.
+6. Run `global` if a new region is being added (so the gallery image
+   versions can replicate there). Run `landing-zone` for any new region.
 7. Run `deploy-workload` to create the VM — host key and agenix secrets are
    handled automatically.
 

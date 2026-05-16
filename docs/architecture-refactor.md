@@ -81,7 +81,8 @@ a re-architecture.
 | Workflow | CAF tier | Owns | Trigger | Heavy? |
 |---|---|---|---|---|
 | `image-bake` | Platform (shared service) | Layer Comin/agenix onto upstream VHD → publish gallery image version → smoke test → tag as **blessed** | Weekly schedule + `nixos/**` PRs + manual | **Yes** |
-| `landing-zone` | Platform | Network RG (vnets, subnets, NSGs, route tables, peering anchors), Key Vault, Compute Gallery, identities, monitoring RG | Manual + `infra/landing-zone/**` | No |
+| `global` | Platform (project-wide, region-pinned) | Compute Gallery + project Key Vault, deployed once for the whole project in the primary region | Manual + `infra/global.bicep` / `infra/modules/{gallery,keyvault}/**` changes | No |
+| `landing-zone` | Platform (regional) | Network RG (vnets, subnets, NSGs, route tables, peering anchors), monitoring RG — one per region | Manual + `infra/landing-zone.bicep` / regional module changes | No |
 | `deploy-workload` (renamed `deploy-infra`) | Workload | gw1 + future workloads; consumes the latest **blessed** image version; no SSH bootstrap | Per-PR + manual | No |
 | `comin-status` | Operations | Production health pulse | Schedule | No |
 | `destroy-infra` | Operations | Tear down workload RGs (unchanged) | Manual | No |
@@ -184,6 +185,37 @@ Each phase is one PR. Each PR is independently revertible.
       `docs/secrets.md`. Added `docs/image-bake.md`. Retired `deploy-infra.yml`,
       `infra/main.bicep`, `infra/gallery.bicep`,
       `infra/environments/plaz.bicepparam`. *(merged)*
+- [x] **Phase 8 — Multi-region split (Option B).** Extracted project-wide
+      (region-pinned) shared services — Compute Gallery + project Key Vault —
+      into `infra/global.bicep` + `infra/environments/plaz-global.bicepparam`,
+      deployed once for the whole project by `.github/workflows/global.yml`
+      (deployment record `global-plaz`). `infra/landing-zone.bicep` is now
+      purely regional (monitoring + networking) so additional regions
+      (`plaz-sea`, future `plaz-weu`, …) get their own landing zone without
+      colliding on globally-unique names. `image-bake.yml` and
+      `deploy-workload.yml` read gallery and Key Vault names from the
+      `global-plaz` deployment outputs instead of the per-region landing-zone
+      record. Reverted the fragile "grep `location` out of bicepparam" trick
+      in workflows: `--location` for `az deployment sub create` is now pinned
+      to the primary region (`DEPLOYMENT_LOCATION=southcentralus`), since it
+      only controls where the deployment-record metadata lives — actual
+      resource locations come from each `.bicepparam`'s `location` parameter.
+
+## Adding a new region
+
+1. Allocate a non-overlapping VNET `/24` (e.g. `192.168.87.0/24` for plaz-weu).
+2. Create `infra/environments/<env>-landing-zone.bicepparam` with the new
+   `location` and address prefixes.
+3. Create `infra/environments/<env>-workload.bicepparam` with the new
+   `location` and a unique `gatewayName` (e.g. `gw3`).
+4. Add the env name to the `case "$ENV_NAME"` blocks in
+   `.github/workflows/deploy-workload.yml` (LOCATION / GATEWAY_NAME /
+   REGION_CODE) and `comin-status.yml` (matrix entry).
+5. Update the Compute Gallery's image-version replication regions
+   (image-bake) so the new region can consume baked images.
+6. Run `landing-zone` for the new env, then `deploy-workload`. The `global`
+   workflow stays untouched — the new region consumes the existing gallery
+   and Key Vault.
 
 ## Private repo support
 

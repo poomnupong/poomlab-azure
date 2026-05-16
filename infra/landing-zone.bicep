@@ -1,13 +1,18 @@
-// landing-zone.bicep — Platform infrastructure for the plaz environment
+// landing-zone.bicep — Regional landing zone for one plaz environment
 //
-// Owns: monitoring RG + Log Analytics, network RG + VNET/subnets/NSGs/NAT,
-//       gallery RG + Compute Gallery + image definition,
-//       keyvault RG + Key Vault kv-plaz-scus.
+// Owns the resources that exist once per region:
+//   - monitoring RG + Log Analytics workspace
+//   - network RG    + VNET / subnets / NSGs / NAT gateway
 //
-// CAF tier: Platform (shared service).
+// Project-wide (region-pinned) resources — the Compute Gallery and the
+// project Key Vault — are NOT here; they live in infra/global.bicep and are
+// deployed by .github/workflows/global.yml exactly once for the whole project.
+// Consumers (image-bake.yml, deploy-workload.yml) read those names from the
+// `global-${projectName}` subscription deployment outputs.
+//
+// CAF tier: Platform (regional).
 // Trigger:  Manual or path-filtered push (see landing-zone.yml).
-// Cadence:  Rare — only when network topology, gallery definition, or
-//           Key Vault config changes.
+// Cadence:  Rare — only when network topology changes for a region.
 //
 // Outputs consumed by deploy-workload.yml at deploy time:
 //   gatewaySubnetId, logAnalyticsWorkspaceId
@@ -16,7 +21,7 @@
 
 targetScope = 'subscription'
 
-@description('Azure region for all resources')
+@description('Azure region for all resources in this landing zone')
 param location string
 
 @description('Project name used in resource naming')
@@ -37,9 +42,6 @@ param logRetentionDays int = 30
 @description('Source address prefix for SSH access. Leave empty to omit the SSH NSG rule.')
 param sshSourceAddressPrefix string = ''
 
-@description('Object ID of the CI service principal for Key Vault Secrets Officer. Leave empty to skip role assignment.')
-param ciServicePrincipalObjectId string = ''
-
 @description('Tags applied to all resources')
 param tags object = {
   project: projectName
@@ -49,8 +51,6 @@ param tags object = {
 
 var rgMonitoringName = 'rg-${projectName}-monitoring-${location}'
 var rgNetworkName    = 'rg-${projectName}-network-${location}'
-var rgGalleryName    = 'rg-${projectName}-gallery-${location}'
-var rgKeyVaultName   = 'rg-${projectName}-keyvault-${location}'
 
 resource rgMonitoring 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: rgMonitoringName
@@ -60,18 +60,6 @@ resource rgMonitoring 'Microsoft.Resources/resourceGroups@2024-03-01' = {
 
 resource rgNetwork 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: rgNetworkName
-  location: location
-  tags: tags
-}
-
-resource rgGallery 'Microsoft.Resources/resourceGroups@2024-03-01' = {
-  name: rgGalleryName
-  location: location
-  tags: tags
-}
-
-resource rgKeyVault 'Microsoft.Resources/resourceGroups@2024-03-01' = {
-  name: rgKeyVaultName
   location: location
   tags: tags
 }
@@ -102,36 +90,9 @@ module networking 'modules/networking/main.bicep' = {
   }
 }
 
-module gallery 'modules/gallery/main.bicep' = {
-  name: 'gallery-deployment'
-  scope: rgGallery
-  params: {
-    location: location
-    projectName: projectName
-    tags: tags
-  }
-}
-
-module keyVault 'modules/keyvault/main.bicep' = {
-  name: 'keyvault-deployment'
-  scope: rgKeyVault
-  params: {
-    location: location
-    projectName: projectName
-    ciServicePrincipalObjectId: ciServicePrincipalObjectId
-    tags: tags
-  }
-}
-
 output monitoringResourceGroup string = rgMonitoringName
 output networkResourceGroup    string = rgNetworkName
-output galleryResourceGroup    string = rgGalleryName
-output keyVaultResourceGroup   string = rgKeyVaultName
 output logAnalyticsWorkspaceId string = monitoring.outputs.logAnalyticsWorkspaceId
 output vnetId                  string = networking.outputs.vnetId
 output gatewaySubnetId         string = networking.outputs.gatewaySubnetId
 output defaultSubnetId         string = networking.outputs.defaultSubnetId
-output galleryName             string = gallery.outputs.galleryName
-output imageDefinitionName     string = gallery.outputs.imageDefinitionName
-output keyVaultName            string = keyVault.outputs.keyVaultName
-output keyVaultId              string = keyVault.outputs.keyVaultId
