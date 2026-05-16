@@ -1,14 +1,20 @@
 # landing-zone.yml — Deploy regional landing zone(s) for plaz environments
 #
-# Phase 6 of the workflow/image architecture refactor.
-# See docs/architecture-refactor.md D4 for the CAF split rationale.
-#
 # Owns: monitoring RG + Log Analytics, network RG + VNET/subnets/NSGs/NAT.
 #
 # Project-wide (region-pinned) resources — the Compute Gallery and the
 # project Key Vault — are NOT here; they are deployed once for the whole
 # project by .github/workflows/global.yml. Secondary regions consume them
 # from the `global-${PROJECT_NAME}` subscription deployment outputs.
+#
+# NOTE: When enabling a new region, you do NOT need to run this workflow
+# manually first. deploy-workload.yml automatically deploys the landing-zone
+# inline if it doesn't exist for the target region. Simply flip `enabled: true`
+# in infra/regions.json and push — deploy-workload handles the rest.
+#
+# This workflow is still useful for standalone networking/monitoring updates:
+# when you change landing-zone.bicep or its modules without wanting to
+# trigger a full VM redeploy.
 #
 # Region selection (single source of truth: infra/regions.json):
 #   - push / scheduled / default workflow_dispatch → deploys EVERY region
@@ -19,6 +25,8 @@
 #
 # To add or remove a region: edit infra/regions.json (no workflow change).
 # To pause a region: flip its `enabled` to false in infra/regions.json.
+# (Note: regions.json changes no longer trigger this workflow — they trigger
+# deploy-workload.yml which handles landing-zone inline.)
 #
 # Outputs stored as subscription deployment 'landing-zone-${ENV}':
 #   gatewaySubnetId, logAnalyticsWorkspaceId, etc.
@@ -40,7 +48,6 @@ on:
       - 'infra/modules/monitoring/**'
       - 'infra/modules/networking/**'
       - 'infra/environments/*-landing-zone.bicepparam'
-      - 'infra/regions.json'
       - '.github/workflows/landing-zone.yml'
 
 permissions:
