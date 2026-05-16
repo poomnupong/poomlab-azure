@@ -27,6 +27,10 @@ on:
         description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea, plaz-jpe) to deploy just that one — works even if the region is disabled.'
         required: true
         default: 'all'
+  workflow_run:
+    workflows: ["global"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   id-token: write   # OIDC
@@ -34,6 +38,7 @@ permissions:
 
 env:
   PROJECT_NAME: plaz
+  SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 # Workflow-level concurrency is intentionally absent. Per-environment
 # serialisation is enforced at the deploy-job level via a matrix-aware
@@ -48,6 +53,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Validate workload template
         run: |
@@ -62,6 +69,11 @@ jobs:
   discover:
     name: Discover regions
     needs: validate
+    # Skip on failed upstream workflow_run; allow push, workflow_dispatch,
+    # and successful workflow_run (global) to trigger discovery.
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.regions.outputs.matrix }}
@@ -134,6 +146,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Resolve environment parameters
         run: |
@@ -583,5 +596,5 @@ jobs:
             echo "| Image changed | \`${{ steps.vm-state.outputs.image_changed }}\` |"
             echo "| Host key generated | \`${{ steps.hostkey.outputs.hostkey_generated || 'false' }}\` |"
             echo "| Trigger | \`${{ github.event_name }}\` |"
-            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Commit | \`${{ env.SOURCE_SHA }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
