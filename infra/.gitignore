@@ -1,1 +1,5 @@
+# Ignore Bicep build artifacts (az bicep build emits <template>.json).
 *.json
+
+# ... but keep the regions registry, which is checked in as source.
+!regions.json

@@ -203,19 +203,27 @@ Each phase is one PR. Each PR is independently revertible.
 
 ## Adding a new region
 
-1. Allocate a non-overlapping VNET `/24` (e.g. `192.168.87.0/24` for plaz-weu).
+1. Allocate a non-overlapping VNET `/24` (e.g. `192.168.87.0/24` for plaz-jpe).
 2. Create `infra/environments/<env>-landing-zone.bicepparam` with the new
    `location` and address prefixes.
 3. Create `infra/environments/<env>-workload.bicepparam` with the new
    `location` and a unique `gatewayName` (e.g. `gw3`).
-4. Add the env name to the `case "$ENV_NAME"` blocks in
-   `.github/workflows/deploy-workload.yml` (LOCATION / GATEWAY_NAME /
-   REGION_CODE) and `comin-status.yml` (matrix entry).
-5. Update the Compute Gallery's image-version replication regions
-   (image-bake) so the new region can consume baked images.
-6. Run `landing-zone` for the new env, then `deploy-workload`. The `global`
-   workflow stays untouched — the new region consumes the existing gallery
-   and Key Vault.
+4. Add the host NixOS config under `nixos/hosts/<gatewayName>/` (mirroring
+   `nixos/hosts/gw2/`) and register it in `nixos/flake.nix`
+   (`nixosConfigurations.<gatewayName>`).
+5. Append an entry to **`infra/regions.json`** with `env`, `location`,
+   `gateway`, `regionCode`, and `enabled: true`. This is the single source
+   of truth — `landing-zone.yml`, `deploy-workload.yml`, `comin-status.yml`
+   and `image-bake.yml` all read from it (no per-region workflow edits).
+6. Re-run `image-bake` (workflow_dispatch) so the next gallery image
+   version replicates to the new region — only newly created image
+   versions pick up the updated `--target-regions` list.
+7. Push to `main` (or manually dispatch `landing-zone` then
+   `deploy-workload`). Push automatically deploys every enabled region.
+
+To **pause** a region without removing its config: flip its `enabled` flag
+to `false` in `infra/regions.json`. Push/auto runs will skip it;
+`workflow_dispatch` with `environment=<env>` still works (escape hatch).
 
 ## Private repo support
 

@@ -58,22 +58,48 @@ jobs:
           nix flake check . --no-update-lock-file
 
   # ------------------------------------------------------------------
-  # Check Comin status on each VM (matrix over gateways/regions)
+  # Discover gateways from infra/regions.json (single source of truth)
   # ------------------------------------------------------------------
-  check-gateway:
-    name: Check ${{ matrix.gateway }} Comin Status
+  discover:
+    name: Discover gateways
     needs: validate
     runs-on: ubuntu-latest
     if: >-
       needs.validate.result == 'success'
+    outputs:
+      matrix: ${{ steps.regions.outputs.matrix }}
+      count: ${{ steps.regions.outputs.count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve enabled regions
+        id: regions
+        run: |
+          set -euo pipefail
+          if [ ! -f infra/regions.json ]; then
+            echo "::error::infra/regions.json is missing"
+            exit 1
+          fi
+          MATRIX=$(jq -c '[.regions[] | select(.enabled == true) | {env, location, gateway, regionCode}]' infra/regions.json)
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          echo "Checking $COUNT gateway(s):"
+          echo "$MATRIX" | jq -r '.[] | "  - \(.gateway) (\(.location))"'
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT"   >> "$GITHUB_OUTPUT"
+
+  # ------------------------------------------------------------------
+  # Check Comin status on each VM (matrix over gateways/regions)
+  # ------------------------------------------------------------------
+  check-gateway:
+    name: Check ${{ matrix.gateway }} Comin Status
+    needs: discover
+    runs-on: ubuntu-latest
+    if: needs.discover.outputs.count != '0'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - gateway: gw1
-            location: southcentralus
-          - gateway: gw2
-            location: southeastasia
+        include: ${{ fromJSON(needs.discover.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
