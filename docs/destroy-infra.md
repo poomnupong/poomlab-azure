@@ -112,11 +112,13 @@ az lock delete --name <lock-name> --resource-group <rg-name>
 ### Subscription-level deployments remain
 
 `destroy-infra` only deletes resource groups. The subscription-level
-deployment records (`gallery-plaz`, `deploy-plaz`) remain in Azure as
+deployment records (`global-plaz`, `landing-zone-plaz`, `deploy-plaz`,
+`landing-zone-plaz-sea`, `deploy-plaz-sea`, …) remain in Azure as
 metadata. These are harmless and will be overwritten on the next deploy.
 To clean them up manually:
 
 ```bash
-az deployment sub delete --name gallery-plaz
+az deployment sub delete --name global-plaz
+az deployment sub delete --name landing-zone-plaz
 az deployment sub delete --name deploy-plaz
 ```

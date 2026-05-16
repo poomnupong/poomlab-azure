@@ -1,18 +1,20 @@
-# landing-zone.yml — Deploy platform infrastructure for plaz
+# landing-zone.yml — Deploy regional landing zone for one plaz environment
 #
 # Phase 6 of the workflow/image architecture refactor.
 # See docs/architecture-refactor.md D4 for the CAF split rationale.
 #
-# Owns: monitoring RG + Log Analytics, network RG + VNET/subnets/NSGs/NAT,
-#       gallery RG + Compute Gallery + image definition,
-#       keyvault RG + Key Vault kv-plaz-scus.
+# Owns: monitoring RG + Log Analytics, network RG + VNET/subnets/NSGs/NAT.
 #
-# Trigger: manual or on changes to platform Bicep paths.
-# Cadence: rare — only when network topology, gallery definition, or
-#          Key Vault config changes.
+# Project-wide (region-pinned) resources — the Compute Gallery and the
+# project Key Vault — are NOT here; they are deployed once for the whole
+# project by .github/workflows/global.yml. Secondary regions consume them
+# from the `global-${PROJECT_NAME}` subscription deployment outputs.
 #
-# Outputs stored as subscription deployment 'landing-zone-plaz':
-#   gatewaySubnetId, logAnalyticsWorkspaceId, keyVaultName, etc.
+# Trigger: manual or on changes to regional Bicep paths.
+# Cadence: rare — only when network topology changes for a region.
+#
+# Outputs stored as subscription deployment 'landing-zone-${ENV}':
+#   gatewaySubnetId, logAnalyticsWorkspaceId, etc.
 # These are consumed by deploy-workload.yml at deploy time.
 
 name: landing-zone
@@ -30,8 +32,6 @@ on:
       - 'infra/landing-zone.bicep'
       - 'infra/modules/monitoring/**'
       - 'infra/modules/networking/**'
-      - 'infra/modules/gallery/**'
-      - 'infra/modules/keyvault/**'
       - 'infra/environments/*-landing-zone.bicepparam'
       - '.github/workflows/landing-zone.yml'
 
@@ -40,6 +40,13 @@ permissions:
   contents: read
 
 env:
+  # Region where the subscription-deployment record itself is created. Pin
+  # this to the project's primary region; individual landing zones are
+  # deployed to whatever region their `*-landing-zone.bicepparam` specifies
+  # via the `location` parameter (e.g. plaz=southcentralus, plaz-sea=
+  # southeastasia). `az deployment sub create --location` only controls
+  # where the deployment record metadata lives, not where resources are
+  # created — those locations come from the template.
   DEPLOYMENT_LOCATION: southcentralus
   PROJECT_NAME: plaz
 
@@ -78,19 +85,11 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy Landing Zone Infrastructure
-        env:
-          CI_SP_OBJECT_ID: ${{ secrets.CI_SP_OBJECT_ID }}
         run: |
           set -euxo pipefail
           ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
-          # Derive deployment location from the bicepparam file so the
-          # subscription deployment record lands in the right region.
-          PARAM_LOCATION=$(grep -E "^param location\s*=" \
-            "infra/environments/${ENV}-landing-zone.bicepparam" \
-            | sed -E "s/^param location\s*=\s*'([^']+)'.*/\1/")
-          LOCATION="${PARAM_LOCATION:-${{ env.DEPLOYMENT_LOCATION }}}"
           if ! az deployment sub create \
-            --location "${LOCATION}" \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --template-file infra/landing-zone.bicep \
             --parameters "infra/environments/${ENV}-landing-zone.bicepparam" \
             --name "landing-zone-${ENV}"; then
@@ -120,16 +119,12 @@ jobs:
           {
             echo "### landing-zone summary"
             echo
-            KV=$(az deployment sub show \
-              --name "landing-zone-${ENV}" \
-              --query 'properties.outputs.keyVaultName.value' -o tsv 2>/dev/null || echo 'n/a')
             SUBNET=$(az deployment sub show \
               --name "landing-zone-${ENV}" \
               --query 'properties.outputs.gatewaySubnetId.value' -o tsv 2>/dev/null || echo 'n/a')
             echo "| Field | Value |"
             echo "|-------|-------|"
             echo "| Environment | \`${ENV}\` |"
-            echo "| Key Vault | \`${KV}\` |"
             echo "| Gateway subnet | \`${SUBNET}\` |"
             echo "| Trigger | \`${{ github.event_name }}\` |"
             echo "| Commit | \`${{ github.sha }}\` |"

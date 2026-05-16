@@ -64,7 +64,7 @@ Runs on every trigger. No Azure credentials needed.
 
 Runs on `main` branch only. Requires Azure OIDC (`production` environment).
 
-1. Ensures the Compute Gallery exists (managed by `landing-zone.yml`).
+1. Ensures the Compute Gallery exists (managed by `global.yml`).
 2. Downloads `.vhd.gz` artifact from `build`.
 3. Stages VHD to a managed disk, uploads via AzCopy, creates gallery image version.
 4. Polls until replication completes.

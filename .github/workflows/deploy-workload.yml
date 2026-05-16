@@ -95,15 +95,18 @@ jobs:
               exit 1
               ;;
           esac
-          # The Compute Gallery is region-pinned to southcentralus; all
-          # regions consume baked images from that gallery (replicated across
-          # regions by the gallery image-version).
-          GALLERY_LOCATION=southcentralus
+          # The Compute Gallery and project Key Vault are project-wide
+          # (region-pinned). All regional workloads consume them from the
+          # `global-${PROJECT_NAME}` subscription deployment outputs created
+          # by .github/workflows/global.yml. Image versions are replicated
+          # across regions by the gallery image version itself.
+          GLOBAL_LOCATION=southcentralus
           {
             echo "DEPLOYMENT_LOCATION=$LOCATION"
             echo "GATEWAY_NAME=$GATEWAY_NAME"
             echo "REGION_CODE=$REGION_CODE"
-            echo "GALLERY_LOCATION=$GALLERY_LOCATION"
+            echo "GLOBAL_LOCATION=$GLOBAL_LOCATION"
+            echo "GLOBAL_DEPLOYMENT=global-${{ env.PROJECT_NAME }}"
             echo "LANDING_ZONE_DEPLOYMENT=landing-zone-$ENV_NAME"
             echo "WORKLOAD_DEPLOYMENT=deploy-$ENV_NAME"
           } >> "$GITHUB_ENV"
@@ -142,12 +145,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${GALLERY_LOCATION}"
+          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${GLOBAL_LOCATION}"
           GALLERY_NAME=$(az deployment sub show \
-            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --name "${GLOBAL_DEPLOYMENT}" \
             --query 'properties.outputs.galleryName.value' -o tsv)
           IMAGE_DEF=$(az deployment sub show \
-            --name "gallery-${{ env.PROJECT_NAME }}" \
+            --name "${GLOBAL_DEPLOYMENT}" \
             --query 'properties.outputs.imageDefinitionName.value' -o tsv)
 
           # List all versions, filter to blessed=true, pick the newest by publishedDate
@@ -258,7 +261,16 @@ jobs:
           PUBKEY=$(cat  "$KEY_DIR/ssh_host_ed25519_key.pub")
 
           # ── Store private key in Key Vault ────────────────────────────
-          KV_NAME="kv-${{ env.PROJECT_NAME }}-${REGION_CODE}"
+          # The project Key Vault is region-pinned to the primary region
+          # (managed by global.yml). All regional workloads share it; the
+          # secret name is per-gateway, so collisions are impossible.
+          KV_NAME=$(az deployment sub show \
+            --name "${GLOBAL_DEPLOYMENT}" \
+            --query 'properties.outputs.keyVaultName.value' -o tsv)
+          if [ -z "$KV_NAME" ]; then
+            echo "::error::Could not resolve Key Vault name from ${GLOBAL_DEPLOYMENT}. Run the global workflow first."
+            exit 1
+          fi
           az keyvault secret set \
             --vault-name "$KV_NAME" \
             --name "${GATEWAY_NAME}-ssh-host-ed25519-key" \

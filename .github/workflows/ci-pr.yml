@@ -71,6 +71,10 @@ jobs:
         if: needs.filter.outputs.infra == 'true'
         run: az bicep build --file infra/landing-zone.bicep
 
+      - name: Lint global template
+        if: needs.filter.outputs.infra == 'true'
+        run: az bicep build --file infra/global.bicep
+
       - name: Lint workload template
         if: needs.filter.outputs.infra == 'true'
         run: az bicep build --file infra/workload.bicep
@@ -99,15 +103,14 @@ jobs:
           set -euo pipefail
           # Validate every workload parameter file so region-specific
           # mistakes (e.g. Singapore) are caught in CI, not at deploy time.
+          # `az deployment sub what-if --location` only controls where the
+          # what-if record metadata lives; resources go to the region
+          # specified by the `location` parameter in each .bicepparam.
           for PARAM_FILE in infra/environments/*-workload.bicepparam; do
             ENV_NAME=$(basename "$PARAM_FILE" -workload.bicepparam)
-            # Parse 'location' from the bicepparam file for the --location arg.
-            LOCATION=$(grep -E "^param location\s*=" "$PARAM_FILE" \
-              | sed -E "s/^param location\s*=\s*'([^']+)'.*/\1/")
-            LOCATION="${LOCATION:-${{ env.DEPLOYMENT_LOCATION }}}"
-            echo "::group::what-if ${ENV_NAME} (${LOCATION})"
+            echo "::group::what-if ${ENV_NAME}"
             az deployment sub what-if \
-              --location "${LOCATION}" \
+              --location "${{ env.DEPLOYMENT_LOCATION }}" \
               --template-file infra/workload.bicep \
               --parameters "${PARAM_FILE}" \
               --name "whatif-${{ github.run_id }}-${ENV_NAME}"

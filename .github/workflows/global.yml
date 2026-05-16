@@ -1,0 +1,135 @@
+# global.yml — Deploy project-wide platform infrastructure
+#
+# Owns the resources that are intentionally single-instance for the whole
+# project (region-pinned to the primary region):
+#   - gallery RG  + Azure Compute Gallery + NixOS image definition
+#   - keyvault RG + Key Vault kv-${PROJECT_NAME}-${regionCode}
+#
+# Secondary regional landing zones (deployed by landing-zone.yml) consume
+# both via subscription deployment outputs from this workflow.
+#
+# Trigger: manual or on changes to global Bicep paths.
+# Cadence: very rare — only when gallery definition, project-wide Key Vault
+#          config, or CI role assignments change.
+#
+# Outputs stored as subscription deployment 'global-${PROJECT_NAME}':
+#   galleryName, imageDefinitionName, galleryResourceGroup,
+#   keyVaultName, keyVaultId, keyVaultResourceGroup.
+# These are consumed by image-bake.yml and deploy-workload.yml at run time.
+
+name: global
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Project name (selects infra/environments/<name>-global.bicepparam)'
+        required: true
+        default: 'plaz'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/global.bicep'
+      - 'infra/modules/gallery/**'
+      - 'infra/modules/keyvault/**'
+      - 'infra/environments/*-global.bicepparam'
+      - '.github/workflows/global.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  # Primary region for the project. This is the region the Compute Gallery
+  # and Key Vault are pinned to. It must match the `location` parameter in
+  # infra/environments/<project>-global.bicepparam; it is also the region
+  # the subscription-deployment record itself is created in.
+  DEPLOYMENT_LOCATION: southcentralus
+  PROJECT_NAME: plaz
+
+concurrency:
+  group: global-${{ github.event.inputs.environment || 'plaz' }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Bicep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate global template
+        run: |
+          set -euxo pipefail
+          az bicep build --file infra/global.bicep
+
+  deploy:
+    name: Deploy Global Infrastructure
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Global Infrastructure
+        env:
+          CI_SP_OBJECT_ID: ${{ secrets.CI_SP_OBJECT_ID }}
+        run: |
+          set -euxo pipefail
+          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
+          if ! az deployment sub create \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file infra/global.bicep \
+            --parameters "infra/environments/${ENV}-global.bicepparam" \
+            --name "global-${ENV}"; then
+            echo "::error::Global deployment failed. Fetching error details..."
+            az deployment sub show \
+              --name "global-${ENV}" \
+              --query 'properties.error' -o json || true
+            az deployment operation sub list \
+              --name "global-${ENV}" \
+              --query "[?properties.statusCode != 'OK'].{resource: properties.targetResource.resourceName, status: properties.statusCode, message: properties.statusMessage.error.message}" \
+              -o table || true
+            exit 1
+          fi
+
+      - name: Show Outputs
+        run: |
+          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
+          az deployment sub show \
+            --name "global-${ENV}" \
+            --query properties.outputs \
+            --output table
+
+      - name: Job summary
+        if: always()
+        run: |
+          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
+          {
+            echo "### global summary"
+            echo
+            KV=$(az deployment sub show \
+              --name "global-${ENV}" \
+              --query 'properties.outputs.keyVaultName.value' -o tsv 2>/dev/null || echo 'n/a')
+            GAL=$(az deployment sub show \
+              --name "global-${ENV}" \
+              --query 'properties.outputs.galleryName.value' -o tsv 2>/dev/null || echo 'n/a')
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Project | \`${ENV}\` |"
+            echo "| Primary region | \`${{ env.DEPLOYMENT_LOCATION }}\` |"
+            echo "| Key Vault | \`${KV}\` |"
+            echo "| Gallery | \`${GAL}\` |"
+            echo "| Trigger | \`${{ github.event_name }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
