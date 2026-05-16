@@ -329,6 +329,10 @@ jobs:
           KV_RG=$(az deployment sub show \
             --name "${GLOBAL_DEPLOYMENT}" \
             --query 'properties.outputs.keyVaultResourceGroup.value' -o tsv)
+          if [ -z "$KV_RG" ]; then
+            echo "::error::Could not resolve Key Vault resource group from ${GLOBAL_DEPLOYMENT} (output keyVaultResourceGroup missing). Re-run the global workflow to refresh outputs."
+            exit 1
+          fi
 
           # JIT-allowlist this runner's egress IP. The Key Vault firewall
           # defaults to Deny (see infra/modules/keyvault/main.bicep) so the
