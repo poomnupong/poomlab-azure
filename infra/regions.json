@@ -27,7 +27,10 @@
     "  4. Create nixos/hosts/<gateway>/ and register in nixos/flake.nix",
     "  5. Push to main — deploy-workload auto-deploys landing-zone + workload in one run.",
     "",
-    "To pause a region without deleting its config: flip 'enabled' to false and push."
+    "To pause a region without deleting its config: flip 'enabled' to false and push.",
+    "deploy-workload automatically tears down all matching regional resource groups",
+    "(rg-<project>-*-<location>) for regions that were previously enabled but are",
+    "now disabled/removed in config."
   ],
   "regions": [
     {

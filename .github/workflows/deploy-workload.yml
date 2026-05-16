@@ -6,6 +6,10 @@
 # This means enabling a new region is as simple as:
 #   1. Add the entry to infra/regions.json with enabled=true
 #   2. Push → deploy-workload handles both landing-zone and workload
+# Disabling/removing a region is also automatic on push: this workflow compares
+# the previous commit's enabled regions to the current config and tears down all
+# matching regional resource groups (rg-<project>-*-<location>) that are no
+# longer configured.
 #
 # Push trigger covers workload + landing-zone + regions.json paths only.
 # Global paths (gallery, KV) are excluded from push; instead the workflow_run
@@ -131,10 +135,137 @@ jobs:
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "count=$COUNT"   >> "$GITHUB_OUTPUT"
 
+  # ── Discover stale regions that must be torn down ────────────────────
+  # Push-only: compare the previous commit's enabled regions against the
+  # current config. Any location that was enabled before but is no longer
+  # deployable now is marked stale and deleted before the deploy matrix runs.
+  discover-stale-regions:
+    name: Discover stale regions
+    needs: validate
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      locations: ${{ steps.stale.outputs.locations }}
+      count: ${{ steps.stale.outputs.count }}
+    steps:
+      - name: Checkout (full history for before/after diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve stale regions from config diff
+        id: stale
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f infra/regions.json ]; then
+            echo "::error::infra/regions.json is missing"
+            exit 1
+          fi
+
+          if [ -z "${BEFORE_SHA:-}" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "No previous commit SHA available for this push; skipping stale-region detection."
+            echo "locations=[]" >> "$GITHUB_OUTPUT"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PREV_ENABLED=$(git show "${BEFORE_SHA}:infra/regions.json" 2>/dev/null \
+            | jq -r '.regions[]? | select(.enabled == true) | .location' \
+            | sort -u || true)
+
+          CURR_ENABLED=$(jq -r '.regions[]? | select(.enabled == true) | .location' infra/regions.json | sort -u)
+
+          PREVIOUSLY_ENABLED_NOW_DISABLED=$(comm -23 <(printf '%s\n' "$PREV_ENABLED" | awk 'NF') <(printf '%s\n' "$CURR_ENABLED" | awk 'NF') || true)
+
+          MISSING_PARAM_LOCATIONS=$(jq -r '.regions[]? | select(.enabled == true) | [.env, .location] | @tsv' infra/regions.json \
+            | while IFS=$'\t' read -r env_name location; do
+                if [ ! -f "infra/environments/${env_name}-landing-zone.bicepparam" ] || [ ! -f "infra/environments/${env_name}-workload.bicepparam" ]; then
+                  echo "$location"
+                fi
+              done \
+            | sort -u || true)
+
+          STALE_LOCATIONS=$(printf '%s\n%s\n' "$PREVIOUSLY_ENABLED_NOW_DISABLED" "$MISSING_PARAM_LOCATIONS" | awk 'NF' | sort -u)
+          LOCATIONS_JSON=$(printf '%s\n' "$STALE_LOCATIONS" | awk 'NF' | jq -R . | jq -cs .)
+          COUNT=$(echo "$LOCATIONS_JSON" | jq 'length')
+
+          echo "Stale regions to teardown: $COUNT"
+          echo "$LOCATIONS_JSON" | jq -r '.[] | "  - \(.)"'
+          echo "locations=$LOCATIONS_JSON" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+  cleanup-disabled-regions:
+    name: Cleanup disabled/removed regions (${{ matrix.location }})
+    needs: discover-stale-regions
+    if: needs.discover-stale-regions.outputs.count != '0'
+    runs-on: ubuntu-latest
+    environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        location: ${{ fromJSON(needs.discover-stale-regions.outputs.locations) }}
+    concurrency:
+      group: cleanup-${{ matrix.location }}
+      cancel-in-progress: false
+    env:
+      CLEANUP_LOCATION: ${{ matrix.location }}
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete regional resource groups
+        run: |
+          set -euo pipefail
+          PROJECT="${{ env.PROJECT_NAME }}"
+          LOCATION="${CLEANUP_LOCATION}"
+
+          mapfile -t RESOURCE_GROUPS < <(az group list \
+            --query "[?starts_with(name, 'rg-${PROJECT}-') && ends_with(name, '-${LOCATION}')].name" \
+            -o tsv)
+
+          if [ "${#RESOURCE_GROUPS[@]}" -eq 0 ]; then
+            echo "No resource groups found for location ${LOCATION}; nothing to delete."
+            exit 0
+          fi
+
+          echo "Deleting ${#RESOURCE_GROUPS[@]} resource group(s) for ${LOCATION}:"
+          printf '  - %s\n' "${RESOURCE_GROUPS[@]}"
+
+          FAILED=0
+          for rg in "${RESOURCE_GROUPS[@]}"; do
+            echo "Deleting $rg ..."
+            az group delete --name "$rg" --yes --no-wait
+          done
+
+          for rg in "${RESOURCE_GROUPS[@]}"; do
+            echo "Waiting for $rg deletion to complete ..."
+            if ! az group wait --name "$rg" --deleted --timeout 1800; then
+              echo "::error::Timed out waiting for $rg deletion"
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::One or more resource groups failed to delete for $LOCATION."
+            exit 1
+          fi
+
+          echo "✅ Regional cleanup completed for $LOCATION."
+
   deploy:
     name: Deploy (${{ matrix.env }})
-    needs: discover
-    if: needs.discover.outputs.count != '0'
+    needs: [discover, cleanup-disabled-regions]
+    if: |
+      always() &&
+      needs.discover.outputs.count != '0' &&
+      (needs.cleanup-disabled-regions.result == 'success' || needs.cleanup-disabled-regions.result == 'skipped')
     runs-on: ubuntu-latest
     environment: production
     strategy:
