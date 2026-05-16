@@ -1,4 +1,4 @@
-# landing-zone.yml — Deploy regional landing zone for one plaz environment
+# landing-zone.yml — Deploy regional landing zone(s) for plaz environments
 #
 # Phase 6 of the workflow/image architecture refactor.
 # See docs/architecture-refactor.md D4 for the CAF split rationale.
@@ -10,8 +10,15 @@
 # project by .github/workflows/global.yml. Secondary regions consume them
 # from the `global-${PROJECT_NAME}` subscription deployment outputs.
 #
-# Trigger: manual or on changes to regional Bicep paths.
-# Cadence: rare — only when network topology changes for a region.
+# Region selection (single source of truth: infra/regions.json):
+#   - push / scheduled / default workflow_dispatch → deploys EVERY region
+#     whose `enabled: true` flag is set in infra/regions.json (matrix).
+#   - workflow_dispatch with `environment=<env>` → deploys only that env,
+#     regardless of its `enabled` flag (useful for one-off teardown/repair
+#     on a paused region).
+#
+# To add or remove a region: edit infra/regions.json (no workflow change).
+# To pause a region: flip its `enabled` to false in infra/regions.json.
 #
 # Outputs stored as subscription deployment 'landing-zone-${ENV}':
 #   gatewaySubnetId, logAnalyticsWorkspaceId, etc.
@@ -23,9 +30,9 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment name (selects infra/environments/<name>-landing-zone.bicepparam)'
+        description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea, plaz-jpe) to deploy just that one — works even if the region is disabled.'
         required: true
-        default: 'plaz'
+        default: 'all'
   push:
     branches: [main]
     paths:
@@ -33,6 +40,7 @@ on:
       - 'infra/modules/monitoring/**'
       - 'infra/modules/networking/**'
       - 'infra/environments/*-landing-zone.bicepparam'
+      - 'infra/regions.json'
       - '.github/workflows/landing-zone.yml'
 
 permissions:
@@ -43,16 +51,11 @@ env:
   # Region where the subscription-deployment record itself is created. Pin
   # this to the project's primary region; individual landing zones are
   # deployed to whatever region their `*-landing-zone.bicepparam` specifies
-  # via the `location` parameter (e.g. plaz=southcentralus, plaz-sea=
-  # southeastasia). `az deployment sub create --location` only controls
-  # where the deployment record metadata lives, not where resources are
-  # created — those locations come from the template.
+  # via the `location` parameter. `az deployment sub create --location` only
+  # controls where the deployment record metadata lives, not where resources
+  # are created — those locations come from the template.
   DEPLOYMENT_LOCATION: southcentralus
   PROJECT_NAME: plaz
-
-concurrency:
-  group: landing-zone-${{ github.event.inputs.environment || 'plaz' }}
-  cancel-in-progress: false
 
 jobs:
   validate:
@@ -67,11 +70,69 @@ jobs:
           set -euxo pipefail
           az bicep build --file infra/landing-zone.bicep
 
-  deploy:
-    name: Deploy Landing Zone
+  # ── Discover which regions to deploy ───────────────────────────────
+  # Reads infra/regions.json and emits a JSON array suitable for use as a
+  # matrix include. Push/auto runs deploy every enabled region in parallel.
+  # workflow_dispatch with environment=<env> narrows to a single region
+  # (even if disabled — escape hatch for paused regions).
+  discover:
+    name: Discover regions
     needs: validate
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.regions.outputs.matrix }}
+      count: ${{ steps.regions.outputs.count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve target regions from infra/regions.json
+        id: regions
+        env:
+          REQUESTED_ENV: ${{ github.event.inputs.environment || 'all' }}
+        run: |
+          set -euo pipefail
+          if [ ! -f infra/regions.json ]; then
+            echo "::error::infra/regions.json is missing"
+            exit 1
+          fi
+
+          # When REQUESTED_ENV is 'all' (push or default dispatch), select
+          # every region with enabled=true. Otherwise select the single
+          # matching entry regardless of enabled state.
+          if [ "$REQUESTED_ENV" = "all" ]; then
+            MATRIX=$(jq -c '[.regions[] | select(.enabled == true) | {env, location, gateway, regionCode}]' infra/regions.json)
+          else
+            MATRIX=$(jq -c --arg env "$REQUESTED_ENV" '[.regions[] | select(.env == $env) | {env, location, gateway, regionCode}]' infra/regions.json)
+            COUNT=$(echo "$MATRIX" | jq 'length')
+            if [ "$COUNT" -eq 0 ]; then
+              echo "::error::Requested environment '$REQUESTED_ENV' not found in infra/regions.json"
+              exit 1
+            fi
+          fi
+
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          echo "Selected $COUNT region(s):"
+          echo "$MATRIX" | jq -r '.[] | "  - \(.env) (\(.location), \(.gateway))"'
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT"   >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy Landing Zone (${{ matrix.env }})
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    runs-on: ubuntu-latest
     environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    # Per-environment serialisation: a re-run for the same env queues behind
+    # any in-flight deploy, but distinct envs (plaz, plaz-sea, plaz-jpe) run
+    # in parallel.
+    concurrency:
+      group: landing-zone-${{ matrix.env }}
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
@@ -85,46 +146,51 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy Landing Zone Infrastructure
+        env:
+          ENV_NAME: ${{ matrix.env }}
         run: |
           set -euxo pipefail
-          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
           if ! az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --template-file infra/landing-zone.bicep \
-            --parameters "infra/environments/${ENV}-landing-zone.bicepparam" \
-            --name "landing-zone-${ENV}"; then
-            echo "::error::Landing zone deployment failed. Fetching error details..."
+            --parameters "infra/environments/${ENV_NAME}-landing-zone.bicepparam" \
+            --name "landing-zone-${ENV_NAME}"; then
+            echo "::error::Landing zone deployment failed for ${ENV_NAME}. Fetching error details..."
             az deployment sub show \
-              --name "landing-zone-${ENV}" \
+              --name "landing-zone-${ENV_NAME}" \
               --query 'properties.error' -o json || true
             az deployment operation sub list \
-              --name "landing-zone-${ENV}" \
+              --name "landing-zone-${ENV_NAME}" \
               --query "[?properties.statusCode != 'OK'].{resource: properties.targetResource.resourceName, status: properties.statusCode, message: properties.statusMessage.error.message}" \
               -o table || true
             exit 1
           fi
 
       - name: Show Outputs
+        env:
+          ENV_NAME: ${{ matrix.env }}
         run: |
-          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
           az deployment sub show \
-            --name "landing-zone-${ENV}" \
+            --name "landing-zone-${ENV_NAME}" \
             --query properties.outputs \
             --output table
 
       - name: Job summary
         if: always()
+        env:
+          ENV_NAME: ${{ matrix.env }}
         run: |
-          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
           {
-            echo "### landing-zone summary"
+            echo "### landing-zone summary — ${ENV_NAME}"
             echo
             SUBNET=$(az deployment sub show \
-              --name "landing-zone-${ENV}" \
+              --name "landing-zone-${ENV_NAME}" \
               --query 'properties.outputs.gatewaySubnetId.value' -o tsv 2>/dev/null || echo 'n/a')
             echo "| Field | Value |"
             echo "|-------|-------|"
-            echo "| Environment | \`${ENV}\` |"
+            echo "| Environment | \`${ENV_NAME}\` |"
+            echo "| Location | \`${{ matrix.location }}\` |"
+            echo "| Gateway | \`${{ matrix.gateway }}\` |"
             echo "| Gateway subnet | \`${SUBNET}\` |"
             echo "| Trigger | \`${{ github.event_name }}\` |"
             echo "| Commit | \`${{ github.sha }}\` |"

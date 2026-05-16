@@ -97,6 +97,22 @@
         ];
       };
 
+      # ── gw3: NixOS gateway / NVA VM (Japan East) ──────────────────
+      gw3 = nixpkgs-stable.lib.nixosSystem {
+        inherit system;
+        specialArgs = { inherit pkgs-unstable; };
+        modules = [
+          ./hosts/gw3/default.nix
+          ./hosts/gw3/hardware.nix
+          # Comin GitOps pull-based deployment
+          comin.nixosModules.comin
+          ./modules/comin.nix
+          # Agenix encrypted secrets
+          agenix.nixosModules.default
+          ./modules/agenix.nix
+        ];
+      };
+
       # ── plaz-smoke: ephemeral Tier 2 CI smoke-test host ──────────────
       # Never deployed to production. Exists only so Comin can find a valid
       # nixosConfigurations entry when running on the smoke VM (hostname=plaz-smoke).

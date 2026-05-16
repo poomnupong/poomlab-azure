@@ -189,6 +189,33 @@ jobs:
         with:
           name: plaz-vhd-${{ needs.build.outputs.version }}
 
+      - name: Resolve gallery target regions
+        id: target-regions
+        run: |
+          set -euo pipefail
+          # Replicate the gallery image to every enabled region in
+          # infra/regions.json so secondary regions (plaz-sea, plaz-jpe,
+          # ...) consume the image natively rather than via slow
+          # cross-region reads from the primary. The primary region is
+          # always included (it is enabled=true in regions.json and is
+          # also where the image version is staged).
+          if [ ! -f infra/regions.json ]; then
+            echo "::error::infra/regions.json is missing"
+            exit 1
+          fi
+          # Gather enabled locations, then ensure the primary
+          # DEPLOYMENT_LOCATION is present even if accidentally omitted.
+          mapfile -t REGIONS < <(jq -r '.regions[] | select(.enabled == true) | .location' infra/regions.json)
+          if ! printf '%s\n' "${REGIONS[@]}" | grep -qx "${{ env.DEPLOYMENT_LOCATION }}"; then
+            REGIONS+=("${{ env.DEPLOYMENT_LOCATION }}")
+          fi
+          # Deduplicate, preserving order.
+          mapfile -t REGIONS < <(printf '%s\n' "${REGIONS[@]}" | awk '!seen[$0]++')
+
+          TARGET_REGIONS="${REGIONS[*]}"
+          echo "Image will replicate to: $TARGET_REGIONS"
+          echo "target_regions=$TARGET_REGIONS" >> "$GITHUB_OUTPUT"
+
       - name: Stage VHD and publish gallery image version
         id: stage
         env:
@@ -267,6 +294,7 @@ jobs:
             --gallery-image-definition "$IMAGE_DEF" \
             --gallery-image-version "$GALLERY_VERSION" \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --target-regions ${{ steps.target-regions.outputs.target_regions }} \
             --os-snapshot "$DISK_ID" \
             --query id -o tsv)
 

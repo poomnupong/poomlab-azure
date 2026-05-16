@@ -24,9 +24,9 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Parameter file to use (without extension)'
+        description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea, plaz-jpe) to deploy just that one — works even if the region is disabled.'
         required: true
-        default: 'plaz'
+        default: 'all'
 
 permissions:
   id-token: write   # OIDC
@@ -35,16 +35,11 @@ permissions:
 env:
   PROJECT_NAME: plaz
 
-concurrency:
-  # Do NOT cancel in-progress runs: the deploy job rotates the agenix host
-  # key, writes to Key Vault, and pushes re-encrypted secrets back to the
-  # repo. Cancelling mid-flight would leave the repo / Key Vault / VM in
-  # inconsistent states. Queue new runs instead.
-  #
-  # Group is per-environment so a Singapore (plaz-sea) deploy does not block
-  # a concurrent SCUS (plaz) deploy.
-  group: workload-${{ github.event.inputs.environment || 'plaz' }}
-  cancel-in-progress: false
+# Workflow-level concurrency is intentionally absent. Per-environment
+# serialisation is enforced at the deploy-job level via a matrix-aware
+# `concurrency.group: workload-${{ matrix.env }}` (see below). This lets
+# distinct regions queue independently while still preventing two runs
+# from racing on the same region's host-key rotation + secrets push.
 
 jobs:
   validate:
@@ -59,17 +54,75 @@ jobs:
           set -euxo pipefail
           az bicep build --file infra/workload.bicep
 
-  deploy:
-    name: Deploy
+  # ── Discover which regions to deploy ───────────────────────────────
+  # Reads infra/regions.json and emits a JSON array suitable for use as a
+  # matrix include. Push/auto runs deploy every enabled region. A
+  # workflow_dispatch with environment=<env> narrows to a single region
+  # (even if disabled — escape hatch for paused regions).
+  discover:
+    name: Discover regions
     needs: validate
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.regions.outputs.matrix }}
+      count: ${{ steps.regions.outputs.count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve target regions from infra/regions.json
+        id: regions
+        env:
+          REQUESTED_ENV: ${{ github.event.inputs.environment || 'all' }}
+        run: |
+          set -euo pipefail
+          if [ ! -f infra/regions.json ]; then
+            echo "::error::infra/regions.json is missing"
+            exit 1
+          fi
+
+          if [ "$REQUESTED_ENV" = "all" ]; then
+            MATRIX=$(jq -c '[.regions[] | select(.enabled == true) | {env, location, gateway, regionCode}]' infra/regions.json)
+          else
+            MATRIX=$(jq -c --arg env "$REQUESTED_ENV" '[.regions[] | select(.env == $env) | {env, location, gateway, regionCode}]' infra/regions.json)
+            COUNT=$(echo "$MATRIX" | jq 'length')
+            if [ "$COUNT" -eq 0 ]; then
+              echo "::error::Requested environment '$REQUESTED_ENV' not found in infra/regions.json"
+              exit 1
+            fi
+          fi
+
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          echo "Selected $COUNT region(s):"
+          echo "$MATRIX" | jq -r '.[] | "  - \(.env) (\(.location), \(.gateway))"'
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT"   >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy (${{ matrix.env }})
+    needs: discover
+    if: needs.discover.outputs.count != '0'
     runs-on: ubuntu-latest
     environment: production
+    strategy:
+      fail-fast: false
+      # Serialise across regions: each leg rotates the agenix host key for
+      # its gateway and pushes re-encrypted secrets back to main. Running
+      # legs concurrently would race on `git push` (and double-rotate
+      # secrets.nix). One region at a time is the safe and simple choice;
+      # bake/global is the slow phase, not this workflow.
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    # Per-environment queue: same env serialises (no cancel-in-progress —
+    # cancelling mid-flight would leave repo / Key Vault / VM inconsistent).
+    concurrency:
+      group: workload-${{ matrix.env }}
+      cancel-in-progress: false
     env:
-      # ENV_NAME selects infra/environments/<ENV_NAME>-workload.bicepparam and
-      # all derived resource names (DEPLOYMENT_LOCATION, GATEWAY_NAME,
-      # REGION_CODE). Push events always deploy the default (plaz / SCUS).
-      ENV_NAME: ${{ github.event.inputs.environment || 'plaz' }}
+      # Matrix values exposed as conventional env vars for downstream steps
+      # (most pre-existing scripts read $ENV_NAME / $GATEWAY_NAME / etc.).
+      ENV_NAME: ${{ matrix.env }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,38 +132,19 @@ jobs:
       - name: Resolve environment parameters
         run: |
           set -euo pipefail
-          case "$ENV_NAME" in
-            plaz)
-              LOCATION=southcentralus
-              GATEWAY_NAME=gw1
-              REGION_CODE=scus
-              ;;
-            plaz-sea)
-              LOCATION=southeastasia
-              GATEWAY_NAME=gw2
-              REGION_CODE=sea
-              ;;
-            *)
-              echo "::error::Unknown environment: $ENV_NAME. Supported: plaz, plaz-sea."
-              exit 1
-              ;;
-          esac
-          # The Compute Gallery and project Key Vault are project-wide
-          # (region-pinned). All regional workloads consume them from the
-          # `global-${PROJECT_NAME}` subscription deployment outputs created
-          # by .github/workflows/global.yml — including the gallery RG name,
-          # so the primary-region location is a single source of truth. Image
-          # versions are replicated across regions by the gallery image
-          # version itself.
+          # All region-specific values come from the matrix entry, which is
+          # sourced from infra/regions.json. The Compute Gallery and project
+          # Key Vault are project-wide (region-pinned) and consumed from the
+          # `global-${PROJECT_NAME}` subscription deployment outputs.
           {
-            echo "DEPLOYMENT_LOCATION=$LOCATION"
-            echo "GATEWAY_NAME=$GATEWAY_NAME"
-            echo "REGION_CODE=$REGION_CODE"
+            echo "DEPLOYMENT_LOCATION=${{ matrix.location }}"
+            echo "GATEWAY_NAME=${{ matrix.gateway }}"
+            echo "REGION_CODE=${{ matrix.regionCode }}"
             echo "GLOBAL_DEPLOYMENT=global-${{ env.PROJECT_NAME }}"
-            echo "LANDING_ZONE_DEPLOYMENT=landing-zone-$ENV_NAME"
-            echo "WORKLOAD_DEPLOYMENT=deploy-$ENV_NAME"
+            echo "LANDING_ZONE_DEPLOYMENT=landing-zone-${{ matrix.env }}"
+            echo "WORKLOAD_DEPLOYMENT=deploy-${{ matrix.env }}"
           } >> "$GITHUB_ENV"
-          echo "ENV_NAME=$ENV_NAME  LOCATION=$LOCATION  GATEWAY=$GATEWAY_NAME  REGION=$REGION_CODE"
+          echo "ENV_NAME=${{ matrix.env }}  LOCATION=${{ matrix.location }}  GATEWAY=${{ matrix.gateway }}  REGION=${{ matrix.regionCode }}"
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
