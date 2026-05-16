@@ -20,7 +20,7 @@ long-lived password or certificate is stored.
 | `AZURE_CLIENT_ID`        | Application (client) ID of the Entra ID app registration |
 | `AZURE_TENANT_ID`        | Azure AD tenant ID                               |
 | `AZURE_SUBSCRIPTION_ID`  | Target Azure subscription ID                     |
-| `CI_SP_OBJECT_ID`        | Object ID of the CI service principal, used by `global` to assign the Key Vault Secrets Officer role. Get: `az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv` |
+| `CI_SP_OBJECT_ID`        | Object ID of the CI service principal, used by `global` to assign the Key Vault Secrets Officer and Key Vault Contributor roles. Get: `az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv` |
 
 ---
 
@@ -205,6 +205,15 @@ hosts in every region share the same vault, with one secret per host.
 These secrets are managed entirely by `deploy-workload` — no manual steps are
 needed.
 
+The vault firewall defaults to **Deny** (`networkAcls.defaultAction: 'Deny'`
+in `infra/modules/keyvault/main.bicep`) with `bypass: 'AzureServices'`, so ARM
+deployments and other Azure-internal callers still work. The `deploy-workload`
+workflow temporarily adds the GitHub-hosted runner's egress IP to
+`networkAcls.ipRules` for the duration of `az keyvault secret set`, then
+removes it in an `always()` cleanup step. The CI service principal therefore
+needs **Key Vault Contributor** (management plane) in addition to **Key Vault
+Secrets Officer** (data plane); both are assigned by `infra/modules/keyvault/main.bicep`.
+
 ---
 
 ## Summary table
@@ -214,6 +223,6 @@ needed.
 | `AZURE_CLIENT_ID`        | all Azure workflows                              | Created by bootstrap script        |
 | `AZURE_TENANT_ID`        | all Azure workflows                              | Created by bootstrap script        |
 | `AZURE_SUBSCRIPTION_ID`  | all Azure workflows                              | Created by bootstrap script        |
-| `CI_SP_OBJECT_ID`        | `global`                                         | Object ID for Key Vault Secrets Officer role; get via `az ad sp show` |
+| `CI_SP_OBJECT_ID`        | `global`                                         | Object ID for Key Vault Secrets Officer + Contributor roles; get via `az ad sp show` |
 | `ADMIN_SSH_PUBLIC_KEY`   | `deploy-workload`, `ci-pr`                       | Azure VM initial provisioning; keep in sync with `nixos/keys/admin.pub` |
 | `GH_PAT`                 | `update-flake-lock`, `deploy-workload`           | Fine-grained PAT (Contents + Pull requests + Commit statuses, R/W) |
