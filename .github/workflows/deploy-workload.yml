@@ -1,17 +1,21 @@
 # deploy-workload.yml — Deploy plaz workload infrastructure
 #
-# Phase 5 of the workflow/image architecture refactor.
-# See docs/architecture-refactor.md for design decisions D1–D5.
+# Owns the full per-region deployment lifecycle: landing-zone (network +
+# monitoring) + workload (compute VM). Landing-zone is deployed inline on
+# first run for a region, then skipped on subsequent runs if already present.
+# This means enabling a new region is as simple as:
+#   1. Add the entry to infra/regions.json with enabled=true
+#   2. Push → deploy-workload handles both landing-zone and workload
 #
-# Replaces deploy-infra.yml. Key differences:
-#   - No stage-image job: images are produced by image-bake.yml
-#   - Consumes newest gallery image version tagged blessed=true
-#   - No run-command bootstrap: Comin is baked into the image (D2)
-#   - No SSH ingress from runner needed in steady state
-#   - Agenix host key delivered via cloud-init customData (D2 Option A):
-#       CI generates ssh_host_ed25519_key → private key to Key Vault →
-#       public key to secrets.nix → customData on az vm create →
-#       cloud-init writes key at first boot → Comin + agenix work from boot 0
+# Push trigger covers workload + landing-zone + regions.json paths only.
+# Global paths (gallery, KV) are excluded from push; instead the workflow_run
+# trigger fires automatically after global.yml succeeds, guaranteeing gallery
+# and Key Vault are ready before we try to use them.
+#
+# Agenix host key delivered via cloud-init customData + run-command fallback:
+#   CI generates ssh_host_ed25519_key → private key to Key Vault →
+#   public key to secrets.nix → customData on az vm create →
+#   cloud-init writes key at first boot → Comin + agenix work from boot 0
 
 name: deploy-workload
 
@@ -19,7 +23,14 @@ on:
   push:
     branches: [main]
     paths:
-      - 'infra/**'
+      - 'infra/workload.bicep'
+      - 'infra/landing-zone.bicep'
+      - 'infra/modules/compute/**'
+      - 'infra/modules/networking/**'
+      - 'infra/modules/monitoring/**'
+      - 'infra/environments/*-workload.bicepparam'
+      - 'infra/environments/*-landing-zone.bicepparam'
+      - 'infra/regions.json'
       - '.github/workflows/deploy-workload.yml'
   workflow_dispatch:
     inputs:
@@ -172,6 +183,52 @@ jobs:
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # ── Ensure landing-zone is deployed for this region ───────────────
+      # Checks if the landing-zone subscription deployment already exists and
+      # has outputs. If not, deploys it inline so that enabling a new region
+      # (enabled=true in infra/regions.json) is fully self-contained — no
+      # separate landing-zone workflow run is required.
+      - name: Ensure landing-zone deployed
+        run: |
+          set -euo pipefail
+          # Check if landing-zone deployment is in a succeeded state with all
+          # required outputs. A failed or partial deployment re-runs.
+          LZ_STATE=$(az deployment sub show \
+            --name "$LANDING_ZONE_DEPLOYMENT" \
+            --query 'properties.provisioningState' -o tsv 2>/dev/null || true)
+          LZ_SUBNET=$(az deployment sub show \
+            --name "$LANDING_ZONE_DEPLOYMENT" \
+            --query 'properties.outputs.gatewaySubnetId.value' -o tsv 2>/dev/null || true)
+          LZ_LOG=$(az deployment sub show \
+            --name "$LANDING_ZONE_DEPLOYMENT" \
+            --query 'properties.outputs.logAnalyticsWorkspaceId.value' -o tsv 2>/dev/null || true)
+
+          if [ "$LZ_STATE" = "Succeeded" ] && [ -n "$LZ_SUBNET" ] && [ -n "$LZ_LOG" ]; then
+            echo "Landing zone already deployed and healthy for $ENV_NAME — skipping"
+          else
+            if [ -n "$LZ_STATE" ] && [ "$LZ_STATE" != "Succeeded" ]; then
+              echo "Landing zone exists but state is '$LZ_STATE' — redeploying..."
+            else
+              echo "Landing zone not found for $ENV_NAME — deploying now..."
+            fi
+            if ! az deployment sub create \
+              --location "$DEPLOYMENT_LOCATION" \
+              --template-file infra/landing-zone.bicep \
+              --parameters "infra/environments/${ENV_NAME}-landing-zone.bicepparam" \
+              --name "$LANDING_ZONE_DEPLOYMENT"; then
+              echo "::error::Landing-zone deployment failed for $ENV_NAME. Fetching error details..."
+              az deployment sub show \
+                --name "$LANDING_ZONE_DEPLOYMENT" \
+                --query 'properties.error' -o json || true
+              az deployment operation sub list \
+                --name "$LANDING_ZONE_DEPLOYMENT" \
+                --query "[?properties.statusCode != 'OK'].{resource: properties.targetResource.resourceName, status: properties.statusCode, message: properties.statusMessage.error.message}" \
+                -o table || true
+              exit 1
+            fi
+            echo "Landing zone deployed for $ENV_NAME"
+          fi
+
       - name: Resolve landing-zone outputs
         run: |
           set -euo pipefail
@@ -183,7 +240,7 @@ jobs:
             --query 'properties.outputs.logAnalyticsWorkspaceId.value' -o tsv 2>/dev/null || true)
 
           if [ -z "$SUBNET_ID" ] || [ -z "$LOG_WS_ID" ]; then
-            echo "::error::Could not resolve landing-zone outputs (subnetId or logAnalyticsWorkspaceId). Run the landing-zone workflow first."
+            echo "::error::Could not resolve landing-zone outputs (subnetId or logAnalyticsWorkspaceId) even after ensure step."
             exit 1
           fi
 
@@ -463,9 +520,16 @@ jobs:
             echo "No secrets changes to commit"
           else
             git commit -m "chore: rotate agenix host key for ${GATEWAY_NAME} (Option A) [skip ci]"
-            git push \
-              "https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git" \
-              HEAD:main
+            # Rebase on top of any commits pushed by earlier matrix legs
+            # (e.g. plaz pushes first; plaz-jpe runs next with a stale HEAD).
+            REMOTE_URL="https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git"
+            git fetch --no-tags "$REMOTE_URL" main
+            if ! git rebase origin/main; then
+              echo "::error::Rebase failed — this usually means two matrix legs modified the same file concurrently (e.g. secrets.nix). Abort the rebase, resolve conflicts locally, and re-push manually."
+              git rebase --abort || true
+              exit 1
+            fi
+            git push "$REMOTE_URL" HEAD:main
             echo "✅ Secrets committed"
           fi
 
@@ -652,10 +716,13 @@ jobs:
         if: always()
         run: |
           {
-            echo "### deploy-workload summary"
+            echo "### deploy-workload summary — $ENV_NAME"
             echo
             echo "| Field | Value |"
             echo "|-------|-------|"
+            echo "| Environment | \`$ENV_NAME\` |"
+            echo "| Location | \`${{ matrix.location }}\` |"
+            echo "| Gateway | \`${{ matrix.gateway }}\` |"
             echo "| Blessed image | \`${BLESSED_VERSION:-n/a}\` |"
             echo "| Image changed | \`${{ steps.vm-state.outputs.image_changed }}\` |"
             echo "| Host key generated | \`${{ steps.hostkey.outputs.hostkey_generated || 'false' }}\` |"

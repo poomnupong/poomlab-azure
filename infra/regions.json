@@ -3,8 +3,8 @@
     "Regions registry — single source of truth for plaz multi-region deployments.",
     "",
     "Consumed by:",
-    "  - .github/workflows/landing-zone.yml     (matrix discover)",
-    "  - .github/workflows/deploy-workload.yml  (matrix discover)",
+    "  - .github/workflows/deploy-workload.yml  (matrix discover + inline landing-zone)",
+    "  - .github/workflows/landing-zone.yml     (matrix discover, standalone use only)",
     "  - .github/workflows/comin-status.yml     (matrix discover)",
     "",
     "Fields:",
@@ -20,11 +20,14 @@
     "              region (useful for one-off teardown/repair).",
     "  primary     Optional marker for the project's primary region (gallery + Key Vault).",
     "",
-    "To add a new region: append a new entry here, create the bicepparam files and the",
-    "nixos/hosts/<gateway>/ directory, register the host in nixos/flake.nix. That's it —",
-    "the workflows pick it up automatically.",
+    "To enable a new region end-to-end:",
+    "  1. Append an entry here with enabled=true",
+    "  2. Create infra/environments/<env>-landing-zone.bicepparam",
+    "  3. Create infra/environments/<env>-workload.bicepparam",
+    "  4. Create nixos/hosts/<gateway>/ and register in nixos/flake.nix",
+    "  5. Push to main — deploy-workload auto-deploys landing-zone + workload in one run.",
     "",
-    "To pause a region without deleting its config: flip its 'enabled' to false."
+    "To pause a region without deleting its config: flip 'enabled' to false and push."
   ],
   "regions": [
     {

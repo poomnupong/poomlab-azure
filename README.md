@@ -93,8 +93,8 @@ Each host under `nixos/hosts/<vmname>/` is self-contained — `default.nix` impo
 | `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | Validation only. Bicep lint + NixOS flake check. |
 | `image-bake` | `.github/workflows/image-bake.yml` | Saturday 14:00 UTC + `nixos/**`/`image-bake/**` changes + manual | Builds baked NixOS image with Comin pre-installed. Tier 1 QEMU smoke + Tier 2 real-Azure smoke. Tags `blessed=true` on success. |
 | `global` | `.github/workflows/global.yml` | Manual + global Bicep path changes | Deploys project-wide shared services (Compute Gallery, Key Vault) once for the whole project, region-pinned to the primary region. |
-| `landing-zone` | `.github/workflows/landing-zone.yml` | Manual + regional Bicep path changes | Deploys regional platform resources (monitoring, VNET/NSGs) — one deployment per region. |
-| `deploy-workload` | `.github/workflows/deploy-workload.yml` | Push to `main` on `infra/**` + manual | Deploys gw1. Resolves newest `blessed=true` image. Option A agenix key delivery via cloud-init. No SSH bootstrap. |
+| `landing-zone` | `.github/workflows/landing-zone.yml` | Manual + landing-zone Bicep path changes | Deploys regional platform resources (monitoring, VNET/NSGs). Standalone use only — deploy-workload handles this automatically when enabling a new region. |
+| `deploy-workload` | `.github/workflows/deploy-workload.yml` | Push to `main` on `infra/workload.bicep`, `infra/landing-zone.bicep`, `infra/regions.json` + manual + after `global` completes | Deploys all enabled regions. Auto-deploys landing-zone inline for new regions. Resolves newest `blessed=true` image. Option A agenix key delivery via cloud-init. No SSH bootstrap. |
 | `comin-status` | `.github/workflows/comin-status.yml` | Daily + manual | Health check — Comin status on all VMs. |
 | `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly Monday 08:00 UTC + manual | Updates `nixos/flake.lock` and `image-bake/flake.lock`, opens PR. |
 | `rotate-secrets-reminder` | `.github/workflows/rotate-secrets-reminder.yml` | Monthly 1st + manual | Creates GitHub issue with secrets rotation checklist. |
@@ -194,15 +194,16 @@ gh secret set CI_SP_OBJECT_ID --body "$CI_SP_OID"
 
 ### 3. Deploy Infrastructure
 
-The deployment flow has four steps run in order:
+The deployment flow has three steps run in order:
 
 1. **Run `global` workflow** (once for the project, or when gallery / Key Vault config changes) — deploys the project-wide Compute Gallery and Key Vault `kv-plaz-scus`, region-pinned to the primary region (southcentralus).
 
-2. **Run `landing-zone` workflow** (once per region, or whenever a region's network topology changes) — deploys monitoring + VNET/NSGs for that region.
+2. **Run `image-bake` workflow** — wait for a `blessed=true` gallery image version to appear. This may already have a blessed version if the schedule has run; otherwise trigger manually.
 
-3. **Run `image-bake` workflow** — wait for a `blessed=true` gallery image version to appear. This may already have a blessed version if the schedule has run; otherwise trigger manually.
+3. **Run `deploy-workload`** — deploys all enabled regions from the newest `blessed=true` image. Automatically deploys the regional landing-zone (VNET, monitoring) inline if it doesn't exist yet, so no separate `landing-zone` workflow run is required. Injects the SSH host key via cloud-init `customData`. Comin starts on first boot and applies the full NixOS config automatically. No SSH bootstrap required.
 
-4. **Run `deploy-workload`** — deploys gw1 from the newest `blessed=true` image. Injects the SSH host key via cloud-init `customData`. Comin starts on first boot and applies the full NixOS config automatically. No SSH bootstrap required.
+> **Enabling a region:** Flip `enabled` to `true` in `infra/regions.json` and push. `deploy-workload` auto-deploys both landing-zone and workload for the new region.
+> **Disabling a region:** Flip `enabled` to `false` in `infra/regions.json` and push. Scheduled and push-triggered runs will skip the region; it can still be deployed manually via `workflow_dispatch`.
 
 ## Configuration
 
