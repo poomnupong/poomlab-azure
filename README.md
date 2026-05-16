@@ -203,7 +203,8 @@ The deployment flow has three steps run in order:
 3. **Run `deploy-workload`** — deploys all enabled regions from the newest `blessed=true` image. Automatically deploys the regional landing-zone (VNET, monitoring) inline if it doesn't exist yet, so no separate `landing-zone` workflow run is required. Injects the SSH host key via cloud-init `customData`. Comin starts on first boot and applies the full NixOS config automatically. No SSH bootstrap required.
 
 > **Enabling a region:** Flip `enabled` to `true` in `infra/regions.json` and push. `deploy-workload` auto-deploys both landing-zone and workload for the new region.
-> **Disabling a region:** Flip `enabled` to `false` in `infra/regions.json` and push. `deploy-workload` automatically detects regions that were previously enabled but are now disabled/removed and tears down all matching regional resource groups (`rg-<project>-*-<location>`). You can still redeploy manually via `workflow_dispatch` by specifying a single environment.
+> **Disabling a region:** Flip `enabled` to `false` in `infra/regions.json` (keep the entry) and push. `deploy-workload` automatically detects regions that were previously enabled but are now disabled and tears down all matching regional resource groups (`rg-<project>-*-<location>`). The disabled entry can still be redeployed on demand via `workflow_dispatch` with that single environment.
+> **Removing a region:** Delete its entry from `infra/regions.json` entirely. The next push tears down its resource groups; afterwards, manual redeploy via `workflow_dispatch` is no longer possible (re-add the entry first).
 
 ## Configuration
 

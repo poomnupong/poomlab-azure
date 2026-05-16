@@ -151,6 +151,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Resolve stale regions from config diff
         id: stale
@@ -194,15 +195,27 @@ jobs:
             <(printf '%s\n' "$PREV_ENABLED" | awk 'NF' | sort -u) \
             <(printf '%s\n' "$CURR_ENABLED" | awk 'NF' | sort -u))
 
-          MISSING_PARAM_LOCATIONS=$(jq -r '.regions[]? | select(.enabled == true) | [.env, .location] | @tsv' infra/regions.json \
-            | while IFS=$'\t' read -r env_name location; do
-                if [ ! -f "infra/environments/${env_name}-landing-zone.bicepparam" ] || [ ! -f "infra/environments/${env_name}-workload.bicepparam" ]; then
-                  echo "$location"
-                fi
-              done \
-            | sort -u || true)
+          # Fail fast (rather than teardown) if any currently-enabled region is
+          # missing its required bicepparam files. A missing file is far more
+          # likely to be a transient/accidental partial commit than an intent
+          # to teardown a still-enabled region; deleting active infra here
+          # would be destructive and surprising.
+          MISSING_PARAMS=""
+          while IFS=$'\t' read -r env_name location; do
+            [ -z "$env_name" ] && continue
+            if [ ! -f "infra/environments/${env_name}-landing-zone.bicepparam" ] || [ ! -f "infra/environments/${env_name}-workload.bicepparam" ]; then
+              MISSING_PARAMS+="${env_name} (${location})\n"
+            fi
+          done < <(jq -r '.regions[]? | select(.enabled == true) | [.env, .location] | @tsv' infra/regions.json)
 
-          STALE_LOCATIONS=$(printf '%s\n%s\n' "$PREVIOUSLY_ENABLED_NOW_DISABLED" "$MISSING_PARAM_LOCATIONS" | awk 'NF' | sort -u)
+          if [ -n "$MISSING_PARAMS" ]; then
+            echo "::error::Enabled region(s) in infra/regions.json are missing required bicepparam files:"
+            printf '%b' "$MISSING_PARAMS" | sed 's/^/::error::  - /'
+            echo "::error::Expected infra/environments/<env>-{landing-zone,workload}.bicepparam for every enabled region. Disable the region (enabled=false) to teardown, or add the missing files."
+            exit 1
+          fi
+
+          STALE_LOCATIONS=$(printf '%s\n' "$PREVIOUSLY_ENABLED_NOW_DISABLED" | awk 'NF' | sort -u)
           LOCATIONS_JSON=$(printf '%s\n' "$STALE_LOCATIONS" | awk 'NF' | jq -R . | jq -cs .)
           COUNT=$(echo "$LOCATIONS_JSON" | jq 'length')
 
@@ -254,12 +267,17 @@ jobs:
 
           FAILED=0
           DELETE_WAIT_TIMEOUT_SECONDS=1800
+          DELETING=()
           for rg in "${RESOURCE_GROUPS[@]}"; do
             echo "Deleting $rg ..."
-            if ! az group delete --name "$rg" --yes --no-wait; then
+            if az group delete --name "$rg" --yes --no-wait; then
+              DELETING+=("$rg")
+            else
               echo "::error::Failed to start deletion for $rg"
               # Continue so we still attempt cleanup for other resource groups
-              # in stale regions during this run, then fail at the end.
+              # in stale regions during this run, then fail at the end. We
+              # deliberately do NOT wait on $rg below — `az group wait` would
+              # otherwise sit for the full timeout on a delete that never began.
               FAILED=1
             fi
           done
@@ -268,7 +286,7 @@ jobs:
           # DELETE_WAIT_TIMEOUT_SECONDS per group (Azure control-plane delete +
           # timeout). If timeout is reached we fail the job, but Azure may still
           # finish deleting the group asynchronously.
-          for rg in "${RESOURCE_GROUPS[@]}"; do
+          for rg in "${DELETING[@]}"; do
             echo "Waiting for $rg deletion to complete ..."
             if ! az group wait --name "$rg" --deleted --timeout "$DELETE_WAIT_TIMEOUT_SECONDS"; then
               echo "::error::Timed out waiting for $rg deletion (deletion may still complete asynchronously in Azure). Check Azure Portal/CLI for current status, then re-run if cleanup is incomplete."
