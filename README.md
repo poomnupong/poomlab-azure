@@ -19,11 +19,11 @@ Resources are organized into purpose-specific resource groups following Azure Cl
 
 | Resource Group | Purpose | Contents |
 |---|---|---|
-| `rg-plaz-monitoring-<region>` | Monitoring & diagnostics | Log Analytics workspace, diagnostic settings |
-| `rg-plaz-network-<region>` | Networking | VNETs, subnets, NSGs, public IPs, route tables |
-| `rg-plaz-gallery-<region>` | Compute Gallery | Azure Compute Gallery, image definitions, image versions |
-| `rg-plaz-keyvault-<region>` | Key Vault | Key Vault `kv-plaz-scus` (SSH host keys, RBAC for CI SP) |
-| `rg-plaz-compute-<region>` | Compute workloads | VMs, disks, NICs |
+| `rg-plaz-monitoring-<region>` | Monitoring & diagnostics (per region) | Log Analytics workspace, diagnostic settings |
+| `rg-plaz-network-<region>` | Networking (per region) | VNETs, subnets, NSGs, public IPs, route tables |
+| `rg-plaz-gallery-southcentralus` | Compute Gallery (project-wide, primary region only) | Azure Compute Gallery, image definitions; image versions are replicated to other regions |
+| `rg-plaz-keyvault-southcentralus` | Key Vault (project-wide, primary region only) | Key Vault `kv-plaz-scus` — SSH host keys for every host in every region, RBAC for CI SP |
+| `rg-plaz-compute-<region>` | Compute workloads (per region) | VMs, disks, NICs |
 
 ### Naming Convention
 

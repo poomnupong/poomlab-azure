@@ -22,8 +22,8 @@ name: global
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'Project name (selects infra/environments/<name>-global.bicepparam)'
+      project:
+        description: 'Project name (selects infra/environments/<project>-global.bicepparam)'
         required: true
         default: 'plaz'
   push:
@@ -48,7 +48,7 @@ env:
   PROJECT_NAME: plaz
 
 concurrency:
-  group: global-${{ github.event.inputs.environment || 'plaz' }}
+  group: global-${{ github.event.inputs.project || 'plaz' }}
   cancel-in-progress: false
 
 jobs:
@@ -86,7 +86,7 @@ jobs:
           CI_SP_OBJECT_ID: ${{ secrets.CI_SP_OBJECT_ID }}
         run: |
           set -euxo pipefail
-          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
+          ENV="${{ github.event.inputs.project || env.PROJECT_NAME }}"
           if ! az deployment sub create \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --template-file infra/global.bicep \
@@ -105,7 +105,7 @@ jobs:
 
       - name: Show Outputs
         run: |
-          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
+          ENV="${{ github.event.inputs.project || env.PROJECT_NAME }}"
           az deployment sub show \
             --name "global-${ENV}" \
             --query properties.outputs \
@@ -114,7 +114,7 @@ jobs:
       - name: Job summary
         if: always()
         run: |
-          ENV="${{ github.event.inputs.environment || env.PROJECT_NAME }}"
+          ENV="${{ github.event.inputs.project || env.PROJECT_NAME }}"
           {
             echo "### global summary"
             echo

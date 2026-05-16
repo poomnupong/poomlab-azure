@@ -98,14 +98,14 @@ jobs:
           # The Compute Gallery and project Key Vault are project-wide
           # (region-pinned). All regional workloads consume them from the
           # `global-${PROJECT_NAME}` subscription deployment outputs created
-          # by .github/workflows/global.yml. Image versions are replicated
-          # across regions by the gallery image version itself.
-          GLOBAL_LOCATION=southcentralus
+          # by .github/workflows/global.yml — including the gallery RG name,
+          # so the primary-region location is a single source of truth. Image
+          # versions are replicated across regions by the gallery image
+          # version itself.
           {
             echo "DEPLOYMENT_LOCATION=$LOCATION"
             echo "GATEWAY_NAME=$GATEWAY_NAME"
             echo "REGION_CODE=$REGION_CODE"
-            echo "GLOBAL_LOCATION=$GLOBAL_LOCATION"
             echo "GLOBAL_DEPLOYMENT=global-${{ env.PROJECT_NAME }}"
             echo "LANDING_ZONE_DEPLOYMENT=landing-zone-$ENV_NAME"
             echo "WORKLOAD_DEPLOYMENT=deploy-$ENV_NAME"
@@ -145,7 +145,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          GALLERY_RG="rg-${{ env.PROJECT_NAME }}-gallery-${GLOBAL_LOCATION}"
+          GALLERY_RG=$(az deployment sub show \
+            --name "${GLOBAL_DEPLOYMENT}" \
+            --query 'properties.outputs.galleryResourceGroup.value' -o tsv)
           GALLERY_NAME=$(az deployment sub show \
             --name "${GLOBAL_DEPLOYMENT}" \
             --query 'properties.outputs.galleryName.value' -o tsv)
