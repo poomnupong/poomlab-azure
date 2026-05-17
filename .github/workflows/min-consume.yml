@@ -30,6 +30,8 @@ env:
   # Latest Ubuntu LTS (non-Pro), ARM64-compatible with B4as_v2.
   MIN_CONSUME_VM_IMAGE: Canonical:ubuntu-24_04-lts:server-arm64:latest
   MIN_CONSUME_ADMIN_USERNAME: azureuser
+  # Optional: set CIDR (example: 203.0.113.10/32) only when SSH access is required.
+  MIN_CONSUME_SSH_SOURCE: ''
 
 jobs:
   deploy:

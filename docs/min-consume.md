@@ -18,7 +18,7 @@ Region: **West US 3**
 - Resource group: `rg-min-consume-westus3`
 - VNET: `vnet-min-consume-westus3` (`10.234.0.0/16`)
 - Subnet: `snet-min-consume` (`10.234.0.0/24`)
-- NSG: `nsg-min-consume-westus3` (SSH allow rule, TCP/22)
+- NSG: `nsg-min-consume-westus3` (SSH allow rule is optional via `MIN_CONSUME_SSH_SOURCE`)
 - Public IP: `pip-min-consume-westus3`
 - NIC: `nic-min-consume-westus3`
 - VM: `vm-min-consume-westus3`
@@ -27,6 +27,11 @@ Region: **West US 3**
   - Disk: `Standard_LRS` only
 
 No premium extras are enabled.
+
+## Optional SSH access
+
+By default, no SSH ingress rule is kept open.  
+If SSH is required, set `MIN_CONSUME_SSH_SOURCE` (CIDR, e.g. `203.0.113.10/32`) in workflow/repo variables so `AllowSSH` (TCP/22) is created for that source range only.
 
 ## Subscription discovery and fallback
 

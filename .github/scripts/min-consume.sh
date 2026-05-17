@@ -21,6 +21,7 @@ SUBNET_PREFIX="${MIN_CONSUME_SUBNET_PREFIX:-10.234.0.0/24}"
 VM_SIZE="${MIN_CONSUME_VM_SIZE:-Standard_B4as_v2}"
 VM_IMAGE="${MIN_CONSUME_VM_IMAGE:-Canonical:ubuntu-24_04-lts:server-arm64:latest}"
 ADMIN_USERNAME="${MIN_CONSUME_ADMIN_USERNAME:-azureuser}"
+SSH_SOURCE_PREFIX="${MIN_CONSUME_SSH_SOURCE:-}"
 
 resolve_subscription_ids() {
   local discovered
@@ -67,19 +68,25 @@ ensure_vm_deployed() {
     az network nsg create --resource-group "$RG_NAME" --name "$NSG_NAME" --location "$LOCATION" --output none
   fi
 
-  az network nsg rule create \
-    --resource-group "$RG_NAME" \
-    --nsg-name "$NSG_NAME" \
-    --name AllowSSH \
-    --priority 1000 \
-    --direction Inbound \
-    --access Allow \
-    --protocol Tcp \
-    --source-address-prefixes '*' \
-    --source-port-ranges '*' \
-    --destination-address-prefixes '*' \
-    --destination-port-ranges 22 \
-    --output none
+  if [ -n "$SSH_SOURCE_PREFIX" ]; then
+    echo "==> [$subscription_id] ensuring SSH rule from $SSH_SOURCE_PREFIX"
+    az network nsg rule create \
+      --resource-group "$RG_NAME" \
+      --nsg-name "$NSG_NAME" \
+      --name AllowSSH \
+      --priority 1000 \
+      --direction Inbound \
+      --access Allow \
+      --protocol Tcp \
+      --source-address-prefixes "$SSH_SOURCE_PREFIX" \
+      --source-port-ranges '*' \
+      --destination-address-prefixes '*' \
+      --destination-port-ranges 22 \
+      --output none
+  elif az network nsg rule show --resource-group "$RG_NAME" --nsg-name "$NSG_NAME" --name AllowSSH --output none 2>/dev/null; then
+    echo "==> [$subscription_id] removing existing SSH rule (MIN_CONSUME_SSH_SOURCE is empty)"
+    az network nsg rule delete --resource-group "$RG_NAME" --nsg-name "$NSG_NAME" --name AllowSSH
+  fi
 
   if ! az network public-ip show --resource-group "$RG_NAME" --name "$PIP_NAME" --output none 2>/dev/null; then
     echo "==> [$subscription_id] creating public IP"
@@ -138,7 +145,6 @@ teardown_subscription() {
 
   echo "==> [$subscription_id] deleting resource group $RG_NAME"
   az group delete --name "$RG_NAME" --yes --no-wait
-  az group wait --name "$RG_NAME" --deleted --timeout 3600
 }
 
 main() {
