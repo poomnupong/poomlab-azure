@@ -81,6 +81,16 @@ jobs:
 
           MATRIX=$(printf '%s\n' "$IDS" | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({subscription_id: .})')
           COUNT=$(echo "$MATRIX" | jq 'length')
+          # GitHub Actions caps a single job's matrix expansion at 256
+          # generated jobs. Fail with a clear, actionable error before the
+          # planner rejects the workflow so operators know to narrow the
+          # subscription set (e.g. via `subscription_ids` / `MIN_CONSUME_SUBSCRIPTION_IDS`).
+          if [ "$COUNT" -gt 256 ]; then
+            echo "::error::Discovered $COUNT subscriptions, which exceeds the GitHub Actions matrix limit of 256 jobs."
+            echo "::error::Restrict the set via workflow_dispatch input \`subscription_ids\` or repository variable/secret \`MIN_CONSUME_SUBSCRIPTION_IDS\`,"
+            echo "::error::or split the workload across multiple workflow runs."
+            exit 1
+          fi
           echo "Targeting $COUNT subscription(s):"
           echo "$MATRIX" | jq -r '.[] | "  - \(.subscription_id)"'
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"

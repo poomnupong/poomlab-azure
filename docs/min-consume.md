@@ -44,7 +44,7 @@ The `azure/login@v2` step uses `allow-no-subscriptions: true` so the OIDC login 
 
 If discovery is blocked and no explicit list is supplied, the workflow fails with an error asking for `subscription_ids` / `MIN_CONSUME_SUBSCRIPTION_IDS`.
 
-After discovery, both workflows fan out to a per-subscription matrix so deploy/teardown runs execute in parallel (with `fail-fast: false`).
+After discovery, both workflows fan out to a per-subscription matrix so deploy/teardown runs execute in parallel (with `fail-fast: false`). Effective parallelism is still bounded by GitHub Actions matrix and runner concurrency limits — a single job's matrix is capped at 256 generated jobs, and queued jobs run as runner capacity becomes available. If discovery returns more than 256 subscriptions the workflow fails fast with an actionable error; restrict the set via `subscription_ids` / `MIN_CONSUME_SUBSCRIPTION_IDS` or split it across multiple runs.
 
 ### OIDC/RBAC scope requirement for multi-subscription runs
 
