@@ -23,7 +23,7 @@ Region: **West US 3**
 - NIC: `nic-min-consume-westus3`
 - VM: `vm-min-consume-westus3`
   - Size: `Standard_B4as_v2`
-  - Image: `Canonical:ubuntu-24_04-lts:server-arm64:latest` (latest Ubuntu LTS non-Pro)
+  - Image: auto-resolved latest available Ubuntu LTS non-Pro ARM64 image in West US 3 (prefers Ubuntu 24.04 LTS, then 22.04 LTS)
   - Disk: `Standard_LRS` only
 
 No premium extras are enabled.
@@ -43,6 +43,11 @@ The workflows resolve subscriptions in this order:
 4. Automatic discovery with `az account list --query "[?state=='Enabled'].id" -o tsv`
 
 If discovery is blocked and no explicit list is supplied, the workflow fails with an error asking for `subscription_ids` / `MIN_CONSUME_SUBSCRIPTION_IDS`.
+
+## Optional overrides
+
+- `MIN_CONSUME_VM_IMAGE`: explicit image URN override if your subscription needs a specific offer/SKU
+- `MIN_CONSUME_ADMIN_SSH_PUBLIC_KEY`: optional SSH key for VM creation (defaults to repository `ADMIN_SSH_PUBLIC_KEY` secret in workflow)
 
 ## Manual runs
 

@@ -27,8 +27,8 @@ env:
   MIN_CONSUME_VNET_PREFIX: 10.234.0.0/16
   MIN_CONSUME_SUBNET_PREFIX: 10.234.0.0/24
   MIN_CONSUME_VM_SIZE: Standard_B4as_v2
-  # Latest Ubuntu LTS (non-Pro), ARM64-compatible with B4as_v2.
-  MIN_CONSUME_VM_IMAGE: Canonical:ubuntu-24_04-lts:server-arm64:latest
+  # Optional override. If empty, script auto-resolves latest available Ubuntu LTS non-Pro ARM64 image.
+  MIN_CONSUME_VM_IMAGE: ''
   MIN_CONSUME_ADMIN_USERNAME: azureuser
   # Optional: set CIDR (example: 203.0.113.10/32) only when SSH access is required.
   MIN_CONSUME_SSH_SOURCE: ''
@@ -51,6 +51,7 @@ jobs:
       - name: Deploy per subscription
         env:
           SUBSCRIPTION_IDS: ${{ github.event.inputs.subscription_ids || vars.MIN_CONSUME_SUBSCRIPTION_IDS || secrets.MIN_CONSUME_SUBSCRIPTION_IDS || '' }}
+          MIN_CONSUME_ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY || '' }}
         run: |
           set -euo pipefail
           ./.github/scripts/min-consume.sh deploy

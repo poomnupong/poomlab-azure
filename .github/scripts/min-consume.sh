@@ -19,9 +19,10 @@ VM_NAME="${MIN_CONSUME_VM_NAME:-vm-min-consume-westus3}"
 VNET_PREFIX="${MIN_CONSUME_VNET_PREFIX:-10.234.0.0/16}"
 SUBNET_PREFIX="${MIN_CONSUME_SUBNET_PREFIX:-10.234.0.0/24}"
 VM_SIZE="${MIN_CONSUME_VM_SIZE:-Standard_B4as_v2}"
-VM_IMAGE="${MIN_CONSUME_VM_IMAGE:-Canonical:ubuntu-24_04-lts:server-arm64:latest}"
+VM_IMAGE="${MIN_CONSUME_VM_IMAGE:-}"
 ADMIN_USERNAME="${MIN_CONSUME_ADMIN_USERNAME:-azureuser}"
 SSH_SOURCE_PREFIX="${MIN_CONSUME_SSH_SOURCE:-}"
+ADMIN_SSH_PUBLIC_KEY="${MIN_CONSUME_ADMIN_SSH_PUBLIC_KEY:-}"
 
 resolve_subscription_ids() {
   local discovered
@@ -41,6 +42,29 @@ resolve_subscription_ids() {
 ::error::Provide an explicit list via workflow_dispatch input `subscription_ids`
 ::error::or repository variable/secret `MIN_CONSUME_SUBSCRIPTION_IDS`.
 MSG
+  return 1
+}
+
+resolve_vm_image() {
+  local candidate
+
+  if [ -n "$VM_IMAGE" ]; then
+    echo "$VM_IMAGE"
+    return 0
+  fi
+
+  for candidate in \
+    "Canonical:ubuntu-24_04-lts:server-arm64:latest" \
+    "Canonical:0001-com-ubuntu-server-noble:24_04-lts-arm64:latest" \
+    "Canonical:0001-com-ubuntu-server-jammy:22_04-lts-arm64:latest"; do
+    if az vm image show --location "$LOCATION" --urn "$candidate" --output none 2>/dev/null; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  echo "::error::Could not resolve a supported Ubuntu LTS non-Pro ARM64 image in $LOCATION." >&2
+  echo "::error::Set MIN_CONSUME_VM_IMAGE to a valid URN if your subscription has different image availability." >&2
   return 1
 }
 
@@ -70,6 +94,9 @@ ensure_vm_deployed() {
 
   if [ -n "$SSH_SOURCE_PREFIX" ]; then
     echo "==> [$subscription_id] ensuring SSH rule from $SSH_SOURCE_PREFIX"
+    if az network nsg rule show --resource-group "$RG_NAME" --nsg-name "$NSG_NAME" --name AllowSSH --output none 2>/dev/null; then
+      az network nsg rule delete --resource-group "$RG_NAME" --nsg-name "$NSG_NAME" --name AllowSSH
+    fi
     az network nsg rule create \
       --resource-group "$RG_NAME" \
       --nsg-name "$NSG_NAME" \
@@ -118,19 +145,25 @@ ensure_vm_deployed() {
   fi
 
   echo "==> [$subscription_id] creating VM"
-  az vm create \
-    --resource-group "$RG_NAME" \
-    --name "$VM_NAME" \
-    --location "$LOCATION" \
-    --nics "$NIC_NAME" \
-    --size "$VM_SIZE" \
-    --image "$VM_IMAGE" \
-    --admin-username "$ADMIN_USERNAME" \
-    --authentication-type ssh \
-    --generate-ssh-keys \
-    --storage-sku Standard_LRS \
-    --os-disk-size-gb 30 \
+  VM_CREATE_ARGS=(
+    --resource-group "$RG_NAME"
+    --name "$VM_NAME"
+    --location "$LOCATION"
+    --nics "$NIC_NAME"
+    --size "$VM_SIZE"
+    --image "$RESOLVED_VM_IMAGE"
+    --admin-username "$ADMIN_USERNAME"
+    --authentication-type ssh
+    --storage-sku Standard_LRS
+    --os-disk-size-gb 30
     --output none
+  )
+  if [ -n "$ADMIN_SSH_PUBLIC_KEY" ]; then
+    VM_CREATE_ARGS+=(--ssh-key-values "$ADMIN_SSH_PUBLIC_KEY")
+  else
+    VM_CREATE_ARGS+=(--generate-ssh-keys)
+  fi
+  az vm create "${VM_CREATE_ARGS[@]}"
 }
 
 teardown_subscription() {
@@ -161,6 +194,9 @@ main() {
   case "$MODE" in
     deploy)
       for subscription_id in "${subscriptions[@]}"; do
+        az account set --subscription "$subscription_id"
+        RESOLVED_VM_IMAGE=$(resolve_vm_image)
+        echo "Using VM image for deployment: $RESOLVED_VM_IMAGE"
         ensure_vm_deployed "$subscription_id"
       done
       ;;
