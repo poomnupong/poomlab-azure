@@ -58,6 +58,7 @@ To enumerate and deploy across all subscriptions, assign OIDC at a higher scope:
 - Recommended: management group scope  
   `/providers/Microsoft.Management/managementGroups/<mg-id>`
 - Alternative: tenant root scope (`/`) when management-group scoping is not available.  
+  Requires elevated RBAC to grant roles at `/` (typically `Owner` or `User Access Administrator` at tenant root).
   ⚠️ This is the broadest scope in the tenant, so use it only if management-group scope cannot satisfy your access model.
 
 Example bootstrap command:

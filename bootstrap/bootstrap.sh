@@ -15,6 +15,10 @@
 # Usage:
 #   ./bootstrap/bootstrap.sh [--subscription <sub-id>] [--location <region>] [--github-org <org>] [--github-repo <repo>] [--oidc-role-scope <scope>]
 #
+# Optional environment variables:
+#   AZURE_OIDC_ROLE_SCOPE  RBAC scope for OIDC role assignment (default: /subscriptions/<sub-id>)
+#   AZURE_OIDC_ROLE_NAME   RBAC role name for OIDC principal (default: Contributor)
+#
 set -euo pipefail
 
 # ------------------------------------------------------------------
