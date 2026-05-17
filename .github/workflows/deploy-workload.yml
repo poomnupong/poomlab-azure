@@ -379,8 +379,11 @@ jobs:
 
           mapfile -t CANDIDATE_VMS < <(az vm list \
             --resource-group "$RG" \
-            --query "[?starts_with(name, 'vm-${PROJECT}-') && ends_with(name, '-${LOCATION}')].name" \
-            -o tsv)
+            -o json \
+            | jq -r \
+              --arg project "$PROJECT" \
+              --arg location "$LOCATION" \
+              '.[] | .name | select(startswith("vm-" + $project + "-") and endswith("-" + $location))')
 
           if [ "${#CANDIDATE_VMS[@]}" -eq 0 ]; then
             echo "No candidate VMs found in $RG."
@@ -397,45 +400,48 @@ jobs:
               continue
             fi
 
-            gateway="${vm#vm-${PROJECT}-}"
-            gateway="${gateway%-${LOCATION}}"
-            nic="nic-${PROJECT}-${gateway}-${LOCATION}"
-            pip="pip-${PROJECT}-${gateway}-${LOCATION}"
-            osdisk="osdisk-${PROJECT}-${gateway}-${LOCATION}"
-
             vm_osdisk=$(az vm show \
               --resource-group "$RG" \
               --name "$vm" \
               --query 'storageProfile.osDisk.name' \
               -o tsv 2>/dev/null || true)
-            if [ -n "$vm_osdisk" ]; then
-              osdisk="$vm_osdisk"
+            vm_nic_id=$(az vm show \
+              --resource-group "$RG" \
+              --name "$vm" \
+              --query 'networkProfile.networkInterfaces[0].id' \
+              -o tsv 2>/dev/null || true)
+            vm_pip_id=""
+            if [ -n "$vm_nic_id" ]; then
+              vm_pip_id=$(az network nic show \
+                --ids "$vm_nic_id" \
+                --query 'ipConfigurations[0].publicIPAddress.id' \
+                -o tsv 2>/dev/null || true)
             fi
 
-            echo "Deleting stale VM host resources for $vm (gateway=${gateway}) ..."
+            echo "Deleting stale VM host resources for $vm ..."
             if ! az vm delete --resource-group "$RG" --name "$vm" --force-deletion yes --yes; then
-              echo "::error::Failed to delete stale VM $vm"
+              echo "::error::Failed to delete stale VM $vm in $RG"
               FAILED=1
               continue
             fi
 
-            if az disk show --resource-group "$RG" --name "$osdisk" -o none 2>/dev/null; then
-              az disk delete --resource-group "$RG" --name "$osdisk" --yes || {
-                echo "::error::Failed to delete disk $osdisk"
+            if [ -n "$vm_osdisk" ] && az disk show --resource-group "$RG" --name "$vm_osdisk" -o none 2>/dev/null; then
+              az disk delete --resource-group "$RG" --name "$vm_osdisk" --yes || {
+                echo "::error::Failed to delete disk $vm_osdisk in $RG"
                 FAILED=1
               }
             fi
 
-            if az network nic show --resource-group "$RG" --name "$nic" -o none 2>/dev/null; then
-              az network nic delete --resource-group "$RG" --name "$nic" || {
-                echo "::error::Failed to delete NIC $nic"
+            if [ -n "$vm_nic_id" ] && az network nic show --ids "$vm_nic_id" -o none 2>/dev/null; then
+              az network nic delete --ids "$vm_nic_id" || {
+                echo "::error::Failed to delete NIC $vm_nic_id in $RG"
                 FAILED=1
               }
             fi
 
-            if az network public-ip show --resource-group "$RG" --name "$pip" -o none 2>/dev/null; then
-              az network public-ip delete --resource-group "$RG" --name "$pip" || {
-                echo "::error::Failed to delete Public IP $pip"
+            if [ -n "$vm_pip_id" ] && az network public-ip show --ids "$vm_pip_id" -o none 2>/dev/null; then
+              az network public-ip delete --ids "$vm_pip_id" || {
+                echo "::error::Failed to delete Public IP $vm_pip_id in $RG"
                 FAILED=1
               }
             fi
@@ -450,12 +456,11 @@ jobs:
 
   deploy:
     name: Deploy (${{ matrix.env }})
-    needs: [discover, discover-stale-regions, cleanup-disabled-regions, discover-stale-hosts, cleanup-stale-hosts]
+    needs: [discover, discover-stale-regions, cleanup-disabled-regions, cleanup-stale-hosts]
     if: |
       always() &&
       needs.discover.result == 'success' &&
       needs.discover-stale-regions.result == 'success' &&
-      needs.discover-stale-hosts.result == 'success' &&
       needs.discover.outputs.count != '0' &&
       (needs.cleanup-disabled-regions.result == 'success' || needs.cleanup-disabled-regions.result == 'skipped') &&
       (needs.cleanup-stale-hosts.result == 'success' || needs.cleanup-stale-hosts.result == 'skipped')
