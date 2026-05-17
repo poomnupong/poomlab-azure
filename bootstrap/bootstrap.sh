@@ -135,6 +135,7 @@ create_federated_credential() {
   local issuer="https://token.actions.githubusercontent.com"
   local existing_id
   local is_match
+  local match_query
   local payload
 
   existing_id=$(az ad app federated-credential list \
@@ -159,9 +160,11 @@ EOF
       --parameters "$payload" \
       --only-show-errors -o none
   else
+    # Ensure the existing credential still matches the desired trust config.
+    match_query="[?name=='$name' && issuer=='$issuer' && subject=='$subject' && description=='$description' && length(audiences)==\`1\` && audiences[0]=='api://AzureADTokenExchange'] | length(@)"
     is_match=$(az ad app federated-credential list \
       --id "$APP_OBJECT_ID" \
-      --query "[?name=='$name' && issuer=='$issuer' && subject=='$subject' && description=='$description' && length(audiences)==\`1\` && audiences[0]=='api://AzureADTokenExchange'] | length(@)" \
+      --query "$match_query" \
       -o tsv 2>/dev/null || echo "0")
     if [[ "$is_match" == "1" ]]; then
       echo "    Federated credential already correct: $name"
@@ -169,7 +172,7 @@ EOF
       echo "    Updating federated credential: $name"
       az ad app federated-credential update \
         --id "$APP_OBJECT_ID" \
-        --federated-credential-id "$name" \
+        --federated-credential-id "$existing_id" \
         --parameters "$payload" \
         --only-show-errors -o none
     fi
