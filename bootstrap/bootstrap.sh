@@ -199,12 +199,17 @@ create_federated_credential \
 # ------------------------------------------------------------------
 echo ">>> Step 4: Role Assignment"
 
-EXISTING_ROLE_COUNT=$(az role assignment list \
-  --assignee-object-id "$SP_ID" \
-  --fill-principal-name false \
-  --role "$OIDC_ROLE_NAME" \
-  --scope "$OIDC_ROLE_SCOPE" \
-  --query "length(@)" -o tsv 2>/dev/null || echo "0")
+get_role_assignment_count() {
+  # Avoid extra Microsoft Graph lookups; we only need assignment count here.
+  az role assignment list \
+    --assignee-object-id "$SP_ID" \
+    --fill-principal-name false \
+    --role "$OIDC_ROLE_NAME" \
+    --scope "$OIDC_ROLE_SCOPE" \
+    --query "length(@)" -o tsv 2>/dev/null || echo "0"
+}
+
+EXISTING_ROLE_COUNT=$(get_role_assignment_count)
 
 if [[ "$EXISTING_ROLE_COUNT" == "0" ]]; then
   echo "    Assigning $OIDC_ROLE_NAME role on $OIDC_ROLE_SCOPE..."
@@ -216,12 +221,7 @@ if [[ "$EXISTING_ROLE_COUNT" == "0" ]]; then
     --only-show-errors -o none; then
     echo "    Role assigned."
   else
-    EXISTING_ROLE_COUNT=$(az role assignment list \
-      --assignee-object-id "$SP_ID" \
-      --fill-principal-name false \
-      --role "$OIDC_ROLE_NAME" \
-      --scope "$OIDC_ROLE_SCOPE" \
-      --query "length(@)" -o tsv 2>/dev/null || echo "0")
+    EXISTING_ROLE_COUNT=$(get_role_assignment_count)
     if [[ "$EXISTING_ROLE_COUNT" == "0" ]]; then
       echo "ERROR: Failed to assign $OIDC_ROLE_NAME at $OIDC_ROLE_SCOPE." >&2
       exit 1
