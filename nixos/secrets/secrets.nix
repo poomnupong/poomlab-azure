@@ -8,7 +8,7 @@
 let
   # ── VM host keys ────────────────────────────────────────────────
   gw1-krc = "age1w9fjs4etqd954cu6e468t4zekyr58avgz5t4eylwseuq29cqzefsedpgap";
-  gw1-scus = "age177j87hyj5xr78lqg9pmvfeqvqnjnuvy54ep6wh0gzlxsmd20fstslcnrcq";
+  gw1-scus = "age1tf75lymgsqgk5ad8wtwengwz93w96858fm3rtg8udk36nu8dmgsspqejez";
   gw1-sea = "age1yaxt5ug96xc6r3zvp5skeayxru68g62s82qeyg59p47qrtau7c4s27n4xk";
 
   allSystems = [ gw1-krc gw1-scus gw1-sea ];
