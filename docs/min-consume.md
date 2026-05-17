@@ -35,7 +35,7 @@ If SSH is required, set `MIN_CONSUME_SSH_SOURCE` (CIDR, e.g. `203.0.113.10/32`) 
 
 ## Subscription discovery and fallback
 
-The workflows resolve subscriptions in this order:
+The `azure/login@v2` step uses `allow-no-subscriptions: true` so the OIDC login succeeds even when no `subscription-id` is provided. After login, the workflows resolve subscriptions in this order:
 
 1. `workflow_dispatch` input `subscription_ids`
 2. Repository variable `MIN_CONSUME_SUBSCRIPTION_IDS`
