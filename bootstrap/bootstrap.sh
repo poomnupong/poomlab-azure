@@ -221,7 +221,13 @@ if [[ "$EXISTING_ROLE_COUNT" == "0" ]]; then
     --only-show-errors -o none; then
     echo "    Role assigned."
   else
-    EXISTING_ROLE_COUNT=$(get_role_assignment_count)
+    for _ in 1 2 3; do
+      EXISTING_ROLE_COUNT=$(get_role_assignment_count)
+      if [[ "$EXISTING_ROLE_COUNT" != "0" ]]; then
+        break
+      fi
+      sleep 5
+    done
     if [[ "$EXISTING_ROLE_COUNT" == "0" ]]; then
       echo "ERROR: Failed to assign $OIDC_ROLE_NAME at $OIDC_ROLE_SCOPE." >&2
       echo "       Verify scope format and that your account has Owner/User Access Administrator at this scope." >&2
