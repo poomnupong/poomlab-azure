@@ -44,6 +44,8 @@ The `azure/login@v2` step uses `allow-no-subscriptions: true` so the OIDC login 
 
 If discovery is blocked and no explicit list is supplied, the workflow fails with an error asking for `subscription_ids` / `MIN_CONSUME_SUBSCRIPTION_IDS`.
 
+After discovery, both workflows fan out to a per-subscription matrix so deploy/teardown runs execute in parallel (with `fail-fast: false`).
+
 ### OIDC/RBAC scope requirement for multi-subscription runs
 
 `az account list` only returns subscriptions where the OIDC principal has RBAC access.  
