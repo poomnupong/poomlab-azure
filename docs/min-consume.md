@@ -40,9 +40,34 @@ The `azure/login@v2` step uses `allow-no-subscriptions: true` so the OIDC login 
 1. `workflow_dispatch` input `subscription_ids`
 2. Repository variable `MIN_CONSUME_SUBSCRIPTION_IDS`
 3. Repository secret `MIN_CONSUME_SUBSCRIPTION_IDS`
-4. Automatic discovery with `az account list --query "[?state=='Enabled'].id" -o tsv`
+4. Automatic discovery with `az account list --all --refresh --query "[?state=='Enabled'].id" -o tsv`
 
 If discovery is blocked and no explicit list is supplied, the workflow fails with an error asking for `subscription_ids` / `MIN_CONSUME_SUBSCRIPTION_IDS`.
+
+### OIDC/RBAC scope requirement for multi-subscription runs
+
+`az account list` only returns subscriptions where the OIDC principal has RBAC access.  
+The bootstrap script defaults to subscription-scoped assignment:
+
+- `Contributor` on `/subscriptions/<subscription-id>`
+
+That scope is sufficient for single-subscription workflows, but not for tenant-wide `min-consume`.
+
+To enumerate and deploy across all subscriptions, assign OIDC at a higher scope:
+
+- Recommended: management group scope  
+  `/providers/Microsoft.Management/managementGroups/<mg-id>`
+- Alternative: tenant root scope (`/`) when management-group scoping is not available.  
+  - Requires elevated RBAC to grant roles at `/` (typically `Owner` or `User Access Administrator` at tenant root).
+  - ⚠️ This is the broadest scope in the tenant, so use it only if management-group scope cannot satisfy your access model.
+
+Example bootstrap command:
+
+```bash
+./bootstrap/bootstrap.sh \
+  --subscription <bootstrap-subscription-id> \
+  --oidc-role-scope /providers/Microsoft.Management/managementGroups/<mg-id>
+```
 
 ## Optional overrides
 

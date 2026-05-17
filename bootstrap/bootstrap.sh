@@ -6,14 +6,18 @@
 #   1. Entra ID app registration for GitHub Actions OIDC
 #   2. Federated credentials for main branch and PR workflows
 #   3. Resource groups (monitoring, network, compute)
-#   4. Role assignments (Contributor on subscription)
+#   4. Role assignment for CI identity (default: Contributor on subscription)
 #
 # Prerequisites:
 #   - Azure CLI installed and logged in
-#   - Sufficient permissions (Owner or User Access Administrator on subscription)
+#   - Sufficient permissions (Owner or User Access Administrator on the target scope)
 #
 # Usage:
-#   ./bootstrap/bootstrap.sh [--subscription <sub-id>] [--location <region>] [--github-org <org>] [--github-repo <repo>]
+#   ./bootstrap/bootstrap.sh [--subscription <sub-id>] [--location <region>] [--github-org <org>] [--github-repo <repo>] [--oidc-role-scope <scope>] [--oidc-role-name <role>]
+#
+# Optional environment variables:
+#   AZURE_OIDC_ROLE_SCOPE  RBAC scope for OIDC role assignment (default: /subscriptions/<sub-id>)
+#   AZURE_OIDC_ROLE_NAME   RBAC role name for OIDC principal (default: Contributor)
 #
 set -euo pipefail
 
@@ -26,6 +30,8 @@ PROJECT_NAME="${PROJECT_NAME:-plaz}"
 GITHUB_ORG="${GITHUB_ORG:-poomnupong}"
 GITHUB_REPO="${GITHUB_REPO:-poomlab-azure}"
 APP_DISPLAY_NAME="${PROJECT_NAME}-github-oidc"
+OIDC_ROLE_SCOPE="${AZURE_OIDC_ROLE_SCOPE:-}"
+OIDC_ROLE_NAME="${AZURE_OIDC_ROLE_NAME:-Contributor}"
 
 # ------------------------------------------------------------------
 # Parse arguments
@@ -37,6 +43,8 @@ while [[ $# -gt 0 ]]; do
     --github-org)   GITHUB_ORG="$2"; shift 2 ;;
     --github-repo)  GITHUB_REPO="$2"; shift 2 ;;
     --project)      PROJECT_NAME="$2"; APP_DISPLAY_NAME="${2}-github-oidc"; shift 2 ;;
+    --oidc-role-scope) OIDC_ROLE_SCOPE="$2"; shift 2 ;;
+    --oidc-role-name) OIDC_ROLE_NAME="$2"; shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -62,6 +70,10 @@ fi
 
 az account set --subscription "$SUBSCRIPTION_ID"
 
+if [[ -z "$OIDC_ROLE_SCOPE" ]]; then
+  OIDC_ROLE_SCOPE="/subscriptions/$SUBSCRIPTION_ID"
+fi
+
 echo "============================================================"
 echo " Plaz Azure Bootstrap"
 echo "============================================================"
@@ -69,6 +81,7 @@ echo " Subscription : $SUBSCRIPTION_ID"
 echo " Location     : $LOCATION"
 echo " Project      : $PROJECT_NAME"
 echo " GitHub       : $GITHUB_ORG/$GITHUB_REPO"
+echo " OIDC Role    : $OIDC_ROLE_NAME @ $OIDC_ROLE_SCOPE"
 echo "============================================================"
 echo ""
 
@@ -147,27 +160,27 @@ create_federated_credential \
   "GitHub Actions production environment deployments"
 
 # ------------------------------------------------------------------
-# 4. Role Assignment — Contributor on subscription (idempotent)
+# 4. Role Assignment (idempotent)
 # ------------------------------------------------------------------
 echo ">>> Step 4: Role Assignment"
 
 EXISTING_ROLE=$(az role assignment list \
   --assignee "$SP_ID" \
-  --role "Contributor" \
-  --scope "/subscriptions/$SUBSCRIPTION_ID" \
+  --role "$OIDC_ROLE_NAME" \
+  --scope "$OIDC_ROLE_SCOPE" \
   --query "[0].id" -o tsv 2>/dev/null || true)
 
 if [[ -z "$EXISTING_ROLE" || "$EXISTING_ROLE" == "None" ]]; then
-  echo "    Assigning Contributor role on subscription..."
+  echo "    Assigning $OIDC_ROLE_NAME role on $OIDC_ROLE_SCOPE..."
   az role assignment create \
     --assignee-object-id "$SP_ID" \
     --assignee-principal-type ServicePrincipal \
-    --role "Contributor" \
-    --scope "/subscriptions/$SUBSCRIPTION_ID" \
+    --role "$OIDC_ROLE_NAME" \
+    --scope "$OIDC_ROLE_SCOPE" \
     --only-show-errors -o none
   echo "    Role assigned."
 else
-  echo "    Contributor role already assigned."
+  echo "    $OIDC_ROLE_NAME role already assigned at $OIDC_ROLE_SCOPE."
 fi
 
 # ------------------------------------------------------------------
@@ -213,6 +226,8 @@ echo ""
 echo "   AZURE_CLIENT_ID      = $APP_ID"
 echo "   AZURE_TENANT_ID      = $TENANT_ID"
 echo "   AZURE_SUBSCRIPTION_ID = $SUBSCRIPTION_ID"
+echo "   AZURE_OIDC_ROLE_NAME  = $OIDC_ROLE_NAME"
+echo "   AZURE_OIDC_ROLE_SCOPE = $OIDC_ROLE_SCOPE"
 echo ""
 echo " Resource Groups:"
 echo "   Monitoring : $RG_MONITORING"

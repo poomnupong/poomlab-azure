@@ -112,6 +112,7 @@ Use `min-consume` + `min-consume-teardown` for subscription activity keep-alive 
 - Teardown: Tuesday 00:00 UTC (`min-consume-teardown`, 48 hours later)
 - Target: all subscriptions discoverable with `az account list` via OIDC login
 - Fallback when discovery is blocked: provide subscription IDs via workflow_dispatch input `subscription_ids` or repository variable/secret `MIN_CONSUME_SUBSCRIPTION_IDS`
+- Important: bootstrap defaults to subscription-scoped RBAC. For tenant-wide or management-group-wide `min-consume`, set OIDC role scope to a management group (or tenant root) during bootstrap.
 
 See [`docs/min-consume.md`](docs/min-consume.md) for full details.
 
@@ -162,15 +163,22 @@ You can override defaults via flags:
   --location <region> \
   --github-org <org> \
   --github-repo <repo> \
-  --project <project-name>
+  --project <project-name> \
+  --oidc-role-scope /providers/Microsoft.Management/managementGroups/<mg-id> \
+  --oidc-role-name Contributor
 ```
 
-Or via environment variables: `AZURE_SUBSCRIPTION_ID`, `AZURE_LOCATION`, `GITHUB_ORG`, `GITHUB_REPO`, `PROJECT_NAME`.
+Or via environment variables: `AZURE_SUBSCRIPTION_ID`, `AZURE_LOCATION`, `GITHUB_ORG`, `GITHUB_REPO`, `PROJECT_NAME`, `AZURE_OIDC_ROLE_SCOPE`, `AZURE_OIDC_ROLE_NAME`.
 
 The script creates:
 - Entra ID (AAD) app registration (`<project>-github-oidc`)
-- Service principal with **Contributor** role on the subscription
+- Service principal with configurable role assignment (default: **Contributor** on `/subscriptions/<subscription-id>`)
 - Federated credentials for OIDC (main branch, pull requests, and `production` environment)
+
+For multi-subscription operations (`min-consume` auto-discovery + deploy in all subscriptions), assign the OIDC principal at a higher scope:
+
+- Recommended: `--oidc-role-scope /providers/Microsoft.Management/managementGroups/<mg-id>`
+- Alternative: `--oidc-role-scope /` (tenant root; broadest scope)
 
 At the end, it prints the values you need for the next step.
 
