@@ -1,0 +1,49 @@
+name: min-consume-teardown
+
+on:
+  schedule:
+    # 48 hours after Sunday deployment (Tuesday 00:00 UTC)
+    - cron: '0 0 * * 2'
+  workflow_dispatch:
+    inputs:
+      subscription_ids:
+        description: 'Optional comma/newline-separated subscription IDs. Leave blank to auto-discover with az account list.'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+# Share the `min-consume` concurrency group with the deploy workflow so a
+# manual teardown dispatch cannot race with an in-flight deploy (or vice versa)
+# on the same per-subscription resource group.
+concurrency:
+  group: min-consume
+  cancel-in-progress: false
+
+env:
+  MIN_CONSUME_LOCATION: westus3
+  MIN_CONSUME_RESOURCE_GROUP: rg-min-consume-westus3
+
+jobs:
+  teardown:
+    name: Delete minimal footprint from all subscriptions
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+
+      - name: Teardown per subscription
+        env:
+          SUBSCRIPTION_IDS: ${{ github.event.inputs.subscription_ids || vars.MIN_CONSUME_SUBSCRIPTION_IDS || secrets.MIN_CONSUME_SUBSCRIPTION_IDS || '' }}
+        run: |
+          set -euo pipefail
+          ./.github/scripts/min-consume.sh teardown
