@@ -629,11 +629,12 @@ jobs:
           VM_AGE_PUBKEY=$(echo "$PUBKEY" | ssh-to-age)
           echo "VM age public key: $VM_AGE_PUBKEY"
 
+          SECRETS_NIX=nixos/secrets/secrets.nix
           # Read existing host entries from secrets.nix so we preserve other
           # hosts (e.g. when rotating gw1-sea in Singapore, we must keep gw1-scus's
           # recipient entry intact so it can still decrypt the .age files).
-          SECRETS_NIX=nixos/secrets/secrets.nix
-          python3 - "$SECRETS_NIX" "$GATEWAY_NAME" "$VM_AGE_PUBKEY" <<'PY' > "${SECRETS_NIX}.new"
+          render_and_encrypt_secrets() {
+            python3 - "$SECRETS_NIX" "$GATEWAY_NAME" "$VM_AGE_PUBKEY" <<'PY' > "${SECRETS_NIX}.new"
           import re, sys
           path, gw_name, new_key = sys.argv[1], sys.argv[2], sys.argv[3]
           keys = {}
@@ -666,55 +667,67 @@ jobs:
           print('  "tailscale-authkey.age".publicKeys = allSystems;')
           print('}')
           PY
-          mv "${SECRETS_NIX}.new" "$SECRETS_NIX"
+            mv "${SECRETS_NIX}.new" "$SECRETS_NIX"
 
-          # Collect all current recipients for re-encryption. comin-github-token.age
-          # gets re-encrypted to every host in allSystems so any host can decrypt.
-          ALL_RECIPIENTS=$(grep -oE 'age1[a-z0-9]+' "$SECRETS_NIX" | sort -u)
-          AGE_R_FLAGS=""
-          for k in $ALL_RECIPIENTS; do
-            AGE_R_FLAGS="$AGE_R_FLAGS -r $k"
-          done
+            # Collect all current recipients for re-encryption. comin-github-token.age
+            # gets re-encrypted to every host in allSystems so any host can decrypt.
+            ALL_RECIPIENTS=$(grep -oE 'age1[a-z0-9]+' "$SECRETS_NIX" | sort -u)
+            AGE_R_FLAGS=""
+            for k in $ALL_RECIPIENTS; do
+              AGE_R_FLAGS="$AGE_R_FLAGS -r $k"
+            done
 
-          # Re-encrypt comin-github-token.age for ALL current recipients.
-          # shellcheck disable=SC2086
-          printf '%s' "$GH_PAT" | age $AGE_R_FLAGS -a \
-            > nixos/secrets/comin-github-token.age
-
-          # tailscale-authkey.age — only write a placeholder if it doesn't
-          # already exist. Otherwise the existing operator-managed encrypted
-          # blob is left intact (other hosts retain access). The new host
-          # will not be able to decrypt this secret until the operator
-          # re-encrypts with `agenix -e nixos/secrets/tailscale-authkey.age`.
-          if [ ! -s nixos/secrets/tailscale-authkey.age ]; then
-            echo "::warning::tailscale-authkey.age did not exist — writing placeholder. Re-encrypt with real Tailscale key after deploy."
+            # Re-encrypt comin-github-token.age for ALL current recipients.
             # shellcheck disable=SC2086
-            printf 'PLACEHOLDER_REPLACE_WITH_REAL_KEY' \
-              | age $AGE_R_FLAGS -a > nixos/secrets/tailscale-authkey.age
-          else
-            echo "::warning::tailscale-authkey.age left unchanged. ${GATEWAY_NAME} cannot decrypt it until operator re-encrypts with all current recipients."
-          fi
+            printf '%s' "$GH_PAT" | age $AGE_R_FLAGS -a \
+              > nixos/secrets/comin-github-token.age
+
+            # tailscale-authkey.age — only write a placeholder if it doesn't
+            # already exist. Otherwise the existing operator-managed encrypted
+            # blob is left intact (other hosts retain access). The new host
+            # will not be able to decrypt this secret until the operator
+            # re-encrypts with `agenix -e nixos/secrets/tailscale-authkey.age`.
+            if [ ! -s nixos/secrets/tailscale-authkey.age ]; then
+              echo "::warning::tailscale-authkey.age did not exist — writing placeholder. Re-encrypt with real Tailscale key after deploy."
+              # shellcheck disable=SC2086
+              printf 'PLACEHOLDER_REPLACE_WITH_REAL_KEY' \
+                | age $AGE_R_FLAGS -a > nixos/secrets/tailscale-authkey.age
+            else
+              echo "::warning::tailscale-authkey.age left unchanged. ${GATEWAY_NAME} cannot decrypt it until operator re-encrypts with all current recipients."
+            fi
+          }
 
           # ── Commit secrets back to main ───────────────────────────────
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add nixos/secrets/
-
-          if git diff --cached --quiet; then
-            echo "No secrets changes to commit"
-          else
-            git commit -m "chore: rotate agenix host key for ${GATEWAY_NAME} (Option A) [skip ci]"
-            # Rebase on top of any commits pushed by earlier matrix legs
-            # (e.g. plaz pushes first; plaz-krc runs next with a stale HEAD).
-            REMOTE_URL="https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git"
+          REMOTE_URL="https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git"
+          PUSHED=0
+          for attempt in 1 2 3 4 5 6; do
             git fetch --no-tags "$REMOTE_URL" main:refs/remotes/origin/main
-            if ! git rebase refs/remotes/origin/main; then
-              echo "::error::Rebase failed — this usually means two matrix legs modified the same file concurrently (e.g. secrets.nix). Abort the rebase, resolve conflicts locally, and re-push manually."
-              git rebase --abort || true
-              exit 1
+            git checkout -B ci-secrets-update refs/remotes/origin/main
+
+            render_and_encrypt_secrets
+            git add nixos/secrets/
+
+            if git diff --cached --quiet; then
+              echo "No secrets changes to commit"
+              PUSHED=1
+              break
             fi
-            git push "$REMOTE_URL" HEAD:main
-            echo "✅ Secrets committed"
+
+            git commit -m "chore: rotate agenix host key for ${GATEWAY_NAME} (Option A) [skip ci]"
+            if git push "$REMOTE_URL" HEAD:main; then
+              echo "✅ Secrets committed"
+              PUSHED=1
+              break
+            fi
+
+            echo "::warning::Push rejected by concurrent update (attempt ${attempt}/6); retrying."
+            sleep $((attempt * 2))
+          done
+          if [ "$PUSHED" -ne 1 ]; then
+            echo "::error::Failed to push secrets update after multiple attempts."
+            exit 1
           fi
 
           # ── Build cloud-init customData payload ───────────────────────
