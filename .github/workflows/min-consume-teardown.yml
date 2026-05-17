@@ -27,10 +27,13 @@ env:
   MIN_CONSUME_RESOURCE_GROUP: rg-min-consume-westus3
 
 jobs:
-  teardown:
-    name: Delete minimal footprint from all subscriptions
+  discover:
+    name: Discover subscriptions
     runs-on: ubuntu-latest
     environment: production
+    outputs:
+      matrix: ${{ steps.subscriptions.outputs.matrix }}
+      count: ${{ steps.subscriptions.outputs.count }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,9 +45,67 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
 
-      - name: Teardown per subscription
+      - name: Resolve target subscriptions
+        id: subscriptions
         env:
           SUBSCRIPTION_IDS: ${{ github.event.inputs.subscription_ids || vars.MIN_CONSUME_SUBSCRIPTION_IDS || secrets.MIN_CONSUME_SUBSCRIPTION_IDS || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "${SUBSCRIPTION_IDS:-}" ]; then
+            IDS=$(printf '%s\n' "$SUBSCRIPTION_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | awk 'NF' | sort -u)
+          else
+            IDS=$(az account list --all --refresh --query "[?state=='Enabled'].id" -o tsv 2>/dev/null || true)
+            IDS=$(printf '%s\n' "$IDS" | awk 'NF' | sort -u)
+          fi
+
+          if [ -z "$IDS" ]; then
+            echo "::error::Unable to auto-discover subscriptions with \`az account list\`."
+            echo "::error::Provide an explicit list via workflow_dispatch input \`subscription_ids\`"
+            echo "::error::or repository variable/secret \`MIN_CONSUME_SUBSCRIPTION_IDS\`."
+            exit 1
+          fi
+
+          MATRIX=$(printf '%s\n' "$IDS" | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({subscription_id: .})')
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          # GitHub Actions caps a single job's matrix expansion at 256
+          # generated jobs. Fail with a clear, actionable error before the
+          # planner rejects the workflow so operators know to narrow the
+          # subscription set (e.g. via `subscription_ids` / `MIN_CONSUME_SUBSCRIPTION_IDS`).
+          if [ "$COUNT" -gt 256 ]; then
+            echo "::error::Discovered $COUNT subscriptions, which exceeds the GitHub Actions matrix limit of 256 jobs."
+            echo "::error::Restrict the set via workflow_dispatch input \`subscription_ids\` or repository variable/secret \`MIN_CONSUME_SUBSCRIPTION_IDS\`,"
+            echo "::error::or split the workload across multiple workflow runs."
+            exit 1
+          fi
+          echo "Targeting $COUNT subscription(s):"
+          echo "$MATRIX" | jq -r '.[] | "  - \(.subscription_id)"'
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+  teardown:
+    name: Delete minimal footprint (${{ matrix.subscription_id }})
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    runs-on: ubuntu-latest
+    environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Teardown subscription
+        env:
+          SUBSCRIPTION_IDS: ${{ matrix.subscription_id }}
         run: |
           set -euo pipefail
           ./.github/scripts/min-consume.sh teardown
