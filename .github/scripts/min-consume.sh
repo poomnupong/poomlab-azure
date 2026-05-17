@@ -32,7 +32,7 @@ resolve_subscription_ids() {
     return 0
   fi
 
-  if discovered=$(az account list --query "[?state=='Enabled'].id" -o tsv 2>/dev/null) && [ -n "$discovered" ]; then
+  if discovered=$(az account list --all --refresh --query "[?state=='Enabled'].id" -o tsv 2>/dev/null) && [ -n "$discovered" ]; then
     printf '%s\n' "$discovered" | awk 'NF' | sort -u
     return 0
   fi
