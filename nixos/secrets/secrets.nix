@@ -7,11 +7,11 @@
 #
 let
   # ── VM host keys ────────────────────────────────────────────────
-  gw1 = "age1uzw473a7jpn2l8nxhtgg6dep2537s38eg2tx9fxelgn2jyccgg3srz3xe0";
-  gw2 = "age1yaxt5ug96xc6r3zvp5skeayxru68g62s82qeyg59p47qrtau7c4s27n4xk";
-  gw3 = "age1w9fjs4etqd954cu6e468t4zekyr58avgz5t4eylwseuq29cqzefsedpgap";
+  gw1-scus = "age1uzw473a7jpn2l8nxhtgg6dep2537s38eg2tx9fxelgn2jyccgg3srz3xe0";
+  gw1-sea = "age1yaxt5ug96xc6r3zvp5skeayxru68g62s82qeyg59p47qrtau7c4s27n4xk";
+  gw1-krc = "age1w9fjs4etqd954cu6e468t4zekyr58avgz5t4eylwseuq29cqzefsedpgap";
 
-  allSystems = [ gw1 gw2 gw3 ];
+  allSystems = [ gw1-krc gw1-scus gw1-sea ];
 in
 {
   "comin-github-token.age".publicKeys = allSystems;

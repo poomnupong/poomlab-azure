@@ -1,7 +1,7 @@
-# gw2 — Azure Gen2 hardware configuration (Singapore region)
+# gw1-krc — Azure Gen2 hardware configuration (Korea Central region)
 #
 # Hardware profile for an Azure Hyper-V Gen2 VM with NVMe + SCSI support.
-# Identical to gw1 hardware profile — same Azure VM generation.
+# Identical to gw1-scus/gw1-sea hardware profile — same Azure VM generation.
 
 { config, lib, pkgs, modulesPath, ... }:
 

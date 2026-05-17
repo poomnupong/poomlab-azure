@@ -1,7 +1,7 @@
-# gw3 — NixOS gateway / NVA host (Korea Central region)
+# gw1-krc — NixOS gateway / NVA host (Korea Central region)
 #
 # Host-specific configuration for the Azure NixOS gateway VM in koreacentral.
-# Mirrors gw1/gw2 with a different hostname. Import shared modules from
+# Mirrors gw1-scus/gw1-sea with a different hostname. Import shared modules from
 # ../../modules/ and add host-specific overrides here.
 #
 # Deployed via Comin (GitOps pull model):
@@ -19,7 +19,7 @@
   ];
 
   # ── Hostname ────────────────────────────────────────────────────────
-  networking.hostName = "gw3";
+  networking.hostName = "gw1-krc";
 
   # ── Network interface ───────────────────────────────────────────────
   networking.interfaces = {

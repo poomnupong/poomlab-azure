@@ -11,7 +11,7 @@
     "  env         Selects infra/environments/<env>-{landing-zone,workload}.bicepparam.",
     "              Also passed to az deployment sub create as the deployment name suffix.",
     "  location    Azure region (lowercase, no spaces). Becomes the rg-...-<location> suffix.",
-    "  gateway     Per-region gateway host name (gw1, gw2, gw3, ...). Becomes the NixOS",
+    "  gateway     Per-region gateway host name (gw1-scus, gw1-sea, gw1-krc, ...). Becomes the NixOS",
     "              hostname and VM name suffix. Must also exist as nixos/hosts/<gateway>/.",
     "  regionCode  Short code used in resource naming (legacy; exported as env var only).",
     "  enabled     true = region is deployed by push/auto runs. false = region is skipped",
@@ -38,7 +38,7 @@
     {
       "env": "plaz",
       "location": "southcentralus",
-      "gateway": "gw1",
+      "gateway": "gw1-scus",
       "regionCode": "scus",
       "enabled": true,
       "primary": true
@@ -46,14 +46,14 @@
     {
       "env": "plaz-sea",
       "location": "southeastasia",
-      "gateway": "gw2",
+      "gateway": "gw1-sea",
       "regionCode": "sea",
       "enabled": true
     },
     {
       "env": "plaz-krc",
       "location": "koreacentral",
-      "gateway": "gw3",
+      "gateway": "gw1-krc",
       "regionCode": "krc",
       "enabled": true
     }

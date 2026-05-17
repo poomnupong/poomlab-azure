@@ -1,7 +1,7 @@
-# gw2 — NixOS gateway / NVA host (Singapore region)
+# gw1-sea — NixOS gateway / NVA host (Southeast Asia / Singapore region)
 #
 # Host-specific configuration for the Azure NixOS gateway VM in southeastasia.
-# Mirrors gw1 with a different hostname. Import shared modules from
+# Mirrors gw1-scus with a different hostname. Import shared modules from
 # ../../modules/ and add host-specific overrides here.
 #
 # Deployed via Comin (GitOps pull model):
@@ -19,7 +19,7 @@
   ];
 
   # ── Hostname ────────────────────────────────────────────────────────
-  networking.hostName = "gw2";
+  networking.hostName = "gw1-sea";
 
   # ── Network interface ───────────────────────────────────────────────
   networking.interfaces = {

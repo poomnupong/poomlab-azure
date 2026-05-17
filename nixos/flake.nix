@@ -18,7 +18,7 @@
 #
 # Usage:
 #   nix flake check          — validate all host configs
-#   nixos-rebuild switch --flake .#gw1   — manual deploy on the VM
+#   nixos-rebuild switch --flake .#gw1-scus   — manual deploy on the VM
 #
 # To add a new VM:
 #   1. Add a nixosConfigurations.<vmname> entry below.
@@ -65,13 +65,13 @@
     #   - pkgs-unstable  = nixpkgs (nixos-unstable) — opt-in for bleeding-edge
     nixosConfigurations = {
 
-      # ── gw1: NixOS gateway / NVA VM ──────────────────────────────
-      gw1 = nixpkgs-stable.lib.nixosSystem {
+      # ── gw1-scus: NixOS gateway / NVA VM (South Central US) ──────
+      gw1-scus = nixpkgs-stable.lib.nixosSystem {
         inherit system;
         specialArgs = { inherit pkgs-unstable; };
         modules = [
-          ./hosts/gw1/default.nix
-          ./hosts/gw1/hardware.nix
+          ./hosts/gw1-scus/default.nix
+          ./hosts/gw1-scus/hardware.nix
           # Comin GitOps pull-based deployment
           comin.nixosModules.comin
           ./modules/comin.nix
@@ -81,13 +81,13 @@
         ];
       };
 
-      # ── gw2: NixOS gateway / NVA VM (Singapore) ───────────────────
-      gw2 = nixpkgs-stable.lib.nixosSystem {
+      # ── gw1-sea: NixOS gateway / NVA VM (Southeast Asia / Singapore)
+      gw1-sea = nixpkgs-stable.lib.nixosSystem {
         inherit system;
         specialArgs = { inherit pkgs-unstable; };
         modules = [
-          ./hosts/gw2/default.nix
-          ./hosts/gw2/hardware.nix
+          ./hosts/gw1-sea/default.nix
+          ./hosts/gw1-sea/hardware.nix
           # Comin GitOps pull-based deployment
           comin.nixosModules.comin
           ./modules/comin.nix
@@ -97,13 +97,13 @@
         ];
       };
 
-      # ── gw3: NixOS gateway / NVA VM (Korea Central) ───────────────
-      gw3 = nixpkgs-stable.lib.nixosSystem {
+      # ── gw1-krc: NixOS gateway / NVA VM (Korea Central) ───────────
+      gw1-krc = nixpkgs-stable.lib.nixosSystem {
         inherit system;
         specialArgs = { inherit pkgs-unstable; };
         modules = [
-          ./hosts/gw3/default.nix
-          ./hosts/gw3/hardware.nix
+          ./hosts/gw1-krc/default.nix
+          ./hosts/gw1-krc/hardware.nix
           # Comin GitOps pull-based deployment
           comin.nixosModules.comin
           ./modules/comin.nix

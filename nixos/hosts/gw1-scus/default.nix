@@ -1,4 +1,4 @@
-# gw1 — NixOS gateway / NVA host
+# gw1-scus — NixOS gateway / NVA host (South Central US region)
 #
 # Host-specific configuration for the Azure NixOS gateway VM.
 # Import shared modules from ../../modules/ and add host-specific overrides here.
@@ -27,7 +27,7 @@
   ];
 
   # ── Hostname ────────────────────────────────────────────────────────
-  networking.hostName = "gw1";
+  networking.hostName = "gw1-scus";
 
   # ── Network interface ───────────────────────────────────────────────
   # TODO: verify the interface name on your Azure VM (typically eth0 or enP...).

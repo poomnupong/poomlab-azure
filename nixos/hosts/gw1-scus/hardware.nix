@@ -1,4 +1,4 @@
-# gw1 — Azure Gen2 hardware configuration
+# gw1-scus — Azure Gen2 hardware configuration
 #
 # Hardware profile for an Azure Hyper-V Gen2 VM with NVMe + SCSI support.
 # Adjust disk device names if your image uses a different layout.

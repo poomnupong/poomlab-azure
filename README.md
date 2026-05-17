@@ -36,8 +36,8 @@ Follows [Azure CAF naming convention](https://learn.microsoft.com/en-us/azure/cl
 Examples:
 - `rg-plaz-network-eastus2` — networking resource group
 - `vnet-plaz-hub-eastus2` — hub VNET
-- `vm-plaz-gw1-eastus2` — gateway VM
-- `pip-plaz-gw1-eastus2` — public IP for gateway VM
+- `vm-plaz-gw1-scus-southcentralus` — gateway VM
+- `pip-plaz-gw1-scus-southcentralus` — public IP for gateway VM
 - `nsg-plaz-gateway-eastus2` — NSG for gateway subnet
 - `log-plaz-main-eastus2` — Log Analytics workspace
 
@@ -68,7 +68,7 @@ nixos/
 ├── flake.nix               # Runtime flake with nixosConfigurations output
 ├── flake.lock              # Refreshed weekly by update-flake-lock workflow
 ├── hosts/
-│   └── gw1/
+│   └── gw1-scus/
 │       ├── default.nix     # Host-specific config (hostname, networking, firewall)
 │       └── hardware.nix    # Azure Gen2 hardware config (NVMe+SCSI, boot loader, Hyper-V)
 ├── modules/

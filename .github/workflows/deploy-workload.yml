@@ -630,7 +630,7 @@ jobs:
           echo "VM age public key: $VM_AGE_PUBKEY"
 
           # Read existing host entries from secrets.nix so we preserve other
-          # hosts (e.g. when rotating gw2 in Singapore, we must keep gw1's
+          # hosts (e.g. when rotating gw1-sea in Singapore, we must keep gw1-scus's
           # recipient entry intact so it can still decrypt the .age files).
           SECRETS_NIX=nixos/secrets/secrets.nix
           python3 - "$SECRETS_NIX" "$GATEWAY_NAME" "$VM_AGE_PUBKEY" <<'PY' > "${SECRETS_NIX}.new"

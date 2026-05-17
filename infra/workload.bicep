@@ -1,6 +1,6 @@
 // workload.bicep — Workload (compute) infrastructure for the plaz environment
 //
-// Owns: compute RG + VM (gw1) + NIC + public IP + diagnostics.
+// Owns: compute RG + VM (gw1-<regionCode>) + NIC + public IP + diagnostics.
 //
 // CAF tier: Workload.
 // Trigger:  Per-PR on infra/** changes, or manual dispatch.
@@ -20,8 +20,8 @@ param location string
 @description('Project name used in resource naming')
 param projectName string = 'plaz'
 
-@description('Gateway short name (e.g. gw1, gw2). Must be unique per gateway VM across regions.')
-param gatewayName string = 'gw1'
+@description('Gateway short name (e.g. gw1-scus, gw1-sea). Must be unique per gateway VM across regions.')
+param gatewayName string = 'gw1-scus'
 
 @description('VM size for the NixOS gateway VM')
 param vmSize string = 'Standard_D4ads_v7'
