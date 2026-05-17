@@ -53,17 +53,19 @@ resolve_vm_image() {
     return 0
   fi
 
+  # x86_64 images only: Standard_B4as_v2 is an x86_64 (AMD) VM size and
+  # Azure requires the image architecture to match the VM size architecture.
   for candidate in \
-    "Canonical:ubuntu-24_04-lts:server-arm64:latest" \
-    "Canonical:0001-com-ubuntu-server-noble:24_04-lts-arm64:latest" \
-    "Canonical:0001-com-ubuntu-server-jammy:22_04-lts-arm64:latest"; do
+    "Canonical:ubuntu-24_04-lts:server:latest" \
+    "Canonical:0001-com-ubuntu-server-noble:24_04-lts:latest" \
+    "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest"; do
     if az vm image show --location "$LOCATION" --urn "$candidate" --output none 2>/dev/null; then
       echo "$candidate"
       return 0
     fi
   done
 
-  echo "::error::Could not resolve a supported Ubuntu LTS non-Pro ARM64 image in $LOCATION." >&2
+  echo "::error::Could not resolve a supported Ubuntu LTS non-Pro x86_64 image in $LOCATION." >&2
   echo "::error::Set MIN_CONSUME_VM_IMAGE to a valid URN if your subscription has different image availability." >&2
   return 1
 }

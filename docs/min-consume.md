@@ -23,7 +23,7 @@ Region: **West US 3**
 - NIC: `nic-min-consume-westus3`
 - VM: `vm-min-consume-westus3`
   - Size: `Standard_B4as_v2`
-  - Image: auto-resolved latest available Ubuntu LTS non-Pro ARM64 image in West US 3 (prefers Ubuntu 24.04 LTS, then 22.04 LTS)
+  - Image: auto-resolved latest available Ubuntu LTS non-Pro **x86_64** image in West US 3 (prefers Ubuntu 24.04 LTS, then 22.04 LTS). x86_64 is required because `Standard_B4as_v2` is an x86_64 VM size — Azure rejects ARM64 images on x86_64 VM SKUs.
   - Disk: `Standard_LRS` only
 
 No premium extras are enabled.

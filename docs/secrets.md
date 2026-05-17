@@ -231,4 +231,4 @@ Secrets Officer** (data plane); both are assigned by `infra/modules/keyvault/mai
 | `CI_SP_OBJECT_ID`        | `global`                                         | Object ID for Key Vault Secrets Officer + Contributor roles; get via `az ad sp show` |
 | `ADMIN_SSH_PUBLIC_KEY`   | `deploy-workload`, `ci-pr`                       | Azure VM initial provisioning; keep in sync with `nixos/keys/admin.pub` |
 | `GH_PAT`                 | `update-flake-lock`, `deploy-workload`           | Fine-grained PAT (Contents + Pull requests + Commit statuses, R/W) |
-| `MIN_CONSUME_SUBSCRIPTION_IDS` *(optional)* | `min-consume`, `min-consume-teardown` | Comma/newline-separated fallback list when `az account list` discovery is blocked by scope/policy |
+| `MIN_CONSUME_SUBSCRIPTION_IDS` *(optional)* | `min-consume`, `min-consume-teardown` | Comma/newline-separated fallback list when `az account list` discovery is blocked by scope/policy. May be set as either a repository **variable** (preferred — subscription IDs are not sensitive) or a **secret**; workflows read both (`vars.*` checked first, then `secrets.*`). |

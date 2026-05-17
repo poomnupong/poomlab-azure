@@ -99,7 +99,7 @@ Each host under `nixos/hosts/<vmname>/` is self-contained — `default.nix` impo
 | `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly Monday 08:00 UTC + manual | Updates `nixos/flake.lock` and `image-bake/flake.lock`, opens PR. |
 | `rotate-secrets-reminder` | `.github/workflows/rotate-secrets-reminder.yml` | Monthly 1st + manual | Creates GitHub issue with secrets rotation checklist. |
 | `destroy-infra` | `.github/workflows/destroy-infra.yml` | Manual only | Deletes all Azure resource groups. |
-| `min-consume` | `.github/workflows/min-consume.yml` | Weekly Sunday 00:00 UTC + manual | Deploys a minimal keep-alive footprint per subscription in West US 3 (`rg-min-consume-westus3`, VNET/subnet, NSG, Standard_B4as_v2 VM on latest Ubuntu LTS non-Pro ARM64 image). Optional SSH rule is controlled by `MIN_CONSUME_SSH_SOURCE`. |
+| `min-consume` | `.github/workflows/min-consume.yml` | Weekly Sunday 00:00 UTC + manual | Deploys a minimal keep-alive footprint per subscription in West US 3 (`rg-min-consume-westus3`, VNET/subnet, NSG, Standard_B4as_v2 VM on latest Ubuntu LTS non-Pro x86_64 image). Optional SSH rule is controlled by `MIN_CONSUME_SSH_SOURCE`. |
 | `min-consume-teardown` | `.github/workflows/min-consume-teardown.yml` | Weekly Tuesday 00:00 UTC + manual | Deletes `rg-min-consume-westus3` in every targeted subscription (48 hours after `min-consume`). |
 
 **Key principle:** `ci-pr` acts as the gate — it runs on every PR and must pass before merging. After merge to `main`, Comin (running on each VM) polls this repo every 60 seconds and applies the new config automatically. No SSH bootstrap is ever needed — Comin is baked into the gallery image and starts on first boot.
