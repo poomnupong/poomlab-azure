@@ -2,7 +2,7 @@ name: min-consume
 
 on:
   schedule:
-    # Weekly Sunday 00:00 GMT
+    # Weekly Sunday 00:00 UTC
     - cron: '0 0 * * 0'
   workflow_dispatch:
     inputs:

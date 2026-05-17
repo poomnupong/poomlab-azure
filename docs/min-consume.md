@@ -8,8 +8,8 @@ The `min-consume` workflows create and then remove a minimal footprint in **ever
 
 ## Schedule
 
-- Deploy: **Sunday 00:00 GMT** (`0 0 * * 0`)
-- Teardown: **Tuesday 00:00 GMT** (`0 0 * * 2`) — 48 hours later
+- Deploy: **Sunday 00:00 UTC** (`0 0 * * 0`)
+- Teardown: **Tuesday 00:00 UTC** (`0 0 * * 2`) — 48 hours later
 
 ## What gets deployed (per subscription)
 

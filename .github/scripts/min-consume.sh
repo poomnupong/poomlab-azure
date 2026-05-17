@@ -27,7 +27,7 @@ resolve_subscription_ids() {
   local discovered
 
   if [ -n "${SUBSCRIPTION_IDS:-}" ]; then
-    printf '%s\n' "$SUBSCRIPTION_IDS" | tr ',;' '\n' | sed 's/^ *//;s/ *$//' | awk 'NF' | sort -u
+    printf '%s\n' "$SUBSCRIPTION_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | awk 'NF' | sort -u
     return 0
   fi
 
