@@ -164,7 +164,8 @@ You can override defaults via flags:
   --github-org <org> \
   --github-repo <repo> \
   --project <project-name> \
-  --oidc-role-scope /providers/Microsoft.Management/managementGroups/<mg-id>
+  --oidc-role-scope /providers/Microsoft.Management/managementGroups/<mg-id> \
+  --oidc-role-name Contributor
 ```
 
 Or via environment variables: `AZURE_SUBSCRIPTION_ID`, `AZURE_LOCATION`, `GITHUB_ORG`, `GITHUB_REPO`, `PROJECT_NAME`, `AZURE_OIDC_ROLE_SCOPE`, `AZURE_OIDC_ROLE_NAME`.

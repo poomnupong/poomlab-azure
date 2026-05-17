@@ -13,7 +13,7 @@
 #   - Sufficient permissions (Owner or User Access Administrator on the target scope)
 #
 # Usage:
-#   ./bootstrap/bootstrap.sh [--subscription <sub-id>] [--location <region>] [--github-org <org>] [--github-repo <repo>] [--oidc-role-scope <scope>]
+#   ./bootstrap/bootstrap.sh [--subscription <sub-id>] [--location <region>] [--github-org <org>] [--github-repo <repo>] [--oidc-role-scope <scope>] [--oidc-role-name <role>]
 #
 # Optional environment variables:
 #   AZURE_OIDC_ROLE_SCOPE  RBAC scope for OIDC role assignment (default: /subscriptions/<sub-id>)
