@@ -205,6 +205,7 @@ The deployment flow has three steps run in order:
 > **Enabling a region:** Flip `enabled` to `true` in `infra/regions.json` and push. `deploy-workload` auto-deploys both landing-zone and workload for the new region.
 > **Disabling a region:** Flip `enabled` to `false` in `infra/regions.json` (keep the entry) and push. `deploy-workload` automatically detects regions that were previously enabled but are now disabled and tears down all matching regional resource groups (`rg-<project>-*-<location>`). The disabled entry can still be redeployed on demand via `workflow_dispatch` with that single environment.
 > **Removing a region:** Delete its entry from `infra/regions.json` entirely. The next push tears down its resource groups; afterwards, manual redeploy via `workflow_dispatch` is no longer possible (re-add the entry first).
+> **Removing/renaming a host in an enabled region:** `deploy-workload` now also reconciles VM inventory inside `rg-<project>-compute-<location>` and deletes stale hosts (VM + OS disk + NIC + Public IP) that match the managed naming pattern (`vm-<project>-<gateway>-<location>`) but are no longer present in `infra/regions.json`.
 
 ## Configuration
 

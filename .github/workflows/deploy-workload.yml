@@ -39,7 +39,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea, plaz-krc) to deploy just that one — works even if the region is disabled.'
+        description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea) to deploy just that one — works even if the region is disabled.'
         required: true
         default: 'all'
   workflow_run:
@@ -100,6 +100,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Resolve target regions from infra/regions.json
         id: regions
@@ -303,15 +305,170 @@ jobs:
 
           echo "✅ Regional cleanup completed for $LOCATION."
 
+  discover-stale-hosts:
+    name: Discover stale hosts
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.hosts.outputs.matrix }}
+      count: ${{ steps.hosts.outputs.count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Resolve expected host inventory per enabled location
+        id: hosts
+        run: |
+          set -euo pipefail
+          if [ ! -f infra/regions.json ]; then
+            echo "::error::infra/regions.json is missing"
+            exit 1
+          fi
+
+          MATRIX=$(jq -c --arg project "${{ env.PROJECT_NAME }}" '
+            [.regions[]? | select(.enabled == true) | {
+              location,
+              vm: ("vm-" + $project + "-" + .gateway + "-" + .location)
+            }]
+            | sort_by(.location)
+            | group_by(.location)
+            | map({
+                location: .[0].location,
+                expected_vms: (map(.vm))
+              })
+          ' infra/regions.json)
+
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          echo "Host cleanup locations: $COUNT"
+          echo "$MATRIX" | jq -r '.[] | "  - \(.location): \(.expected_vms | join(", "))"'
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+  cleanup-stale-hosts:
+    name: Cleanup stale hosts (${{ matrix.location }})
+    needs: discover-stale-hosts
+    if: needs.discover-stale-hosts.outputs.count != '0'
+    runs-on: ubuntu-latest
+    environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.discover-stale-hosts.outputs.matrix) }}
+    concurrency:
+      group: cleanup-hosts-${{ matrix.location }}
+      cancel-in-progress: false
+    env:
+      CLEANUP_LOCATION: ${{ matrix.location }}
+      EXPECTED_VMS_JSON: ${{ toJSON(matrix.expected_vms) }}
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete stale VMs for enabled location
+        run: |
+          set -euo pipefail
+          PROJECT="${{ env.PROJECT_NAME }}"
+          LOCATION="${CLEANUP_LOCATION}"
+          RG="rg-${PROJECT}-compute-${LOCATION}"
+
+          if [ "$(az group exists --name "$RG" -o tsv)" != "true" ]; then
+            echo "Compute resource group $RG does not exist; nothing to clean up."
+            exit 0
+          fi
+
+          mapfile -t CANDIDATE_VMS < <(az vm list \
+            --resource-group "$RG" \
+            -o json \
+            | jq -r \
+              --arg project "$PROJECT" \
+              --arg location "$LOCATION" \
+              '.[] | .name | select(startswith("vm-" + $project + "-") and endswith("-" + $location))')
+
+          if [ "${#CANDIDATE_VMS[@]}" -eq 0 ]; then
+            echo "No candidate VMs found in $RG."
+            exit 0
+          fi
+
+          echo "Expected VM(s) for $LOCATION:"
+          echo "$EXPECTED_VMS_JSON" | jq -r '.[] | "  - \(.)"'
+          FAILED=0
+
+          for vm in "${CANDIDATE_VMS[@]}"; do
+            if echo "$EXPECTED_VMS_JSON" | jq -e --arg vm "$vm" 'index($vm) != null' >/dev/null; then
+              echo "Keeping expected VM: $vm"
+              continue
+            fi
+
+            vm_osdisk=$(az vm show \
+              --resource-group "$RG" \
+              --name "$vm" \
+              --query 'storageProfile.osDisk.name' \
+              -o tsv 2>/dev/null || true)
+            vm_nic_id=$(az vm show \
+              --resource-group "$RG" \
+              --name "$vm" \
+              --query 'networkProfile.networkInterfaces[0].id' \
+              -o tsv 2>/dev/null || true)
+            vm_pip_id=""
+            if [ -n "$vm_nic_id" ]; then
+              vm_pip_id=$(az network nic show \
+                --ids "$vm_nic_id" \
+                --query 'ipConfigurations[0].publicIPAddress.id' \
+                -o tsv 2>/dev/null || true)
+            fi
+
+            echo "Deleting stale VM host resources for $vm ..."
+            if ! az vm delete --resource-group "$RG" --name "$vm" --force-deletion yes --yes; then
+              echo "::error::Failed to delete stale VM $vm in $RG"
+              FAILED=1
+              continue
+            fi
+
+            if [ -n "$vm_osdisk" ] && az disk show --resource-group "$RG" --name "$vm_osdisk" -o none 2>/dev/null; then
+              az disk delete --resource-group "$RG" --name "$vm_osdisk" --yes || {
+                echo "::error::Failed to delete disk $vm_osdisk in $RG"
+                FAILED=1
+              }
+            fi
+
+            if [ -n "$vm_nic_id" ] && az network nic show --ids "$vm_nic_id" -o none 2>/dev/null; then
+              az network nic delete --ids "$vm_nic_id" || {
+                echo "::error::Failed to delete NIC $vm_nic_id in $RG"
+                FAILED=1
+              }
+            fi
+
+            if [ -n "$vm_pip_id" ] && az network public-ip show --ids "$vm_pip_id" -o none 2>/dev/null; then
+              az network public-ip delete --ids "$vm_pip_id" || {
+                echo "::error::Failed to delete Public IP $vm_pip_id in $RG"
+                FAILED=1
+              }
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::One or more stale host resources failed to delete in $RG."
+            exit 1
+          fi
+
+          echo "✅ Stale host cleanup completed for $LOCATION."
+
   deploy:
     name: Deploy (${{ matrix.env }})
-    needs: [discover, discover-stale-regions, cleanup-disabled-regions]
+    needs: [discover, discover-stale-regions, cleanup-disabled-regions, cleanup-stale-hosts]
     if: |
       always() &&
       needs.discover.result == 'success' &&
       needs.discover-stale-regions.result == 'success' &&
       needs.discover.outputs.count != '0' &&
-      (needs.cleanup-disabled-regions.result == 'success' || needs.cleanup-disabled-regions.result == 'skipped')
+      (needs.cleanup-disabled-regions.result == 'success' || needs.cleanup-disabled-regions.result == 'skipped') &&
+      (needs.cleanup-stale-hosts.result == 'success' || needs.cleanup-stale-hosts.result == 'skipped')
     runs-on: ubuntu-latest
     environment: production
     strategy:
