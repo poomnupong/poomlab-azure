@@ -172,13 +172,18 @@ Or via environment variables: `AZURE_SUBSCRIPTION_ID`, `AZURE_LOCATION`, `GITHUB
 
 The script creates:
 - Entra ID (AAD) app registration (`<project>-github-oidc`)
-- Service principal with configurable role assignment (default: **Contributor** on `/subscriptions/<subscription-id>`)
+- Service principal with configurable role assignment (default: **Contributor** on tenant root scope `/`)
 - Federated credentials for OIDC (main branch, pull requests, and `production` environment)
 
-For multi-subscription operations (`min-consume` auto-discovery + deploy in all subscriptions), assign the OIDC principal at a higher scope:
+For multi-subscription operations (`min-consume` auto-discovery + deploy in all subscriptions), keep the OIDC principal at management group or tenant root scope (not subscription scope):
 
 - Recommended: `--oidc-role-scope /providers/Microsoft.Management/managementGroups/<mg-id>`
 - Alternative: `--oidc-role-scope /` (tenant root; broadest scope)
+
+> Limitations:
+> - Assigning RBAC at management-group/tenant-root scope requires elevated permissions (`Owner` or `User Access Administrator` at that scope).
+> - Tenant root (`/`) is broad; prefer management-group scope where possible.
+> - RBAC propagation can take a few minutes before `az account list --all --refresh` returns all newly accessible subscriptions.
 
 At the end, it prints the values you need for the next step.
 

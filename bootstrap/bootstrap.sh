@@ -6,7 +6,7 @@
 #   1. Entra ID app registration for GitHub Actions OIDC
 #   2. Federated credentials for main branch and PR workflows
 #   3. Resource groups (monitoring, network, compute)
-#   4. Role assignment for CI identity (default: Contributor on subscription)
+#   4. Role assignment for CI identity (default: Contributor on tenant root)
 #
 # Prerequisites:
 #   - Azure CLI installed and logged in
@@ -16,8 +16,13 @@
 #   ./bootstrap/bootstrap.sh [--subscription <sub-id>] [--location <region>] [--github-org <org>] [--github-repo <repo>] [--oidc-role-scope <scope>] [--oidc-role-name <role>]
 #
 # Optional environment variables:
-#   AZURE_OIDC_ROLE_SCOPE  RBAC scope for OIDC role assignment (default: /subscriptions/<sub-id>)
+#   AZURE_OIDC_ROLE_SCOPE  RBAC scope for OIDC role assignment (default: /)
 #   AZURE_OIDC_ROLE_NAME   RBAC role name for OIDC principal (default: Contributor)
+#
+# Limitations:
+#   - Default scope (/) is tenant root and requires elevated RBAC to assign roles there.
+#   - Prefer management group scope for least privilege:
+#       /providers/Microsoft.Management/managementGroups/<mg-id>
 #
 set -euo pipefail
 
@@ -71,7 +76,7 @@ fi
 az account set --subscription "$SUBSCRIPTION_ID"
 
 if [[ -z "$OIDC_ROLE_SCOPE" ]]; then
-  OIDC_ROLE_SCOPE="/subscriptions/$SUBSCRIPTION_ID"
+  OIDC_ROLE_SCOPE="/"
 fi
 
 echo "============================================================"
@@ -127,20 +132,50 @@ create_federated_credential() {
   local name="$1"
   local subject="$2"
   local description="$3"
+  local issuer="https://token.actions.githubusercontent.com"
+  local existing_id
+  local is_match
+  local match_query
+  local payload
 
-  existing=$(az ad app federated-credential list --id "$APP_OBJECT_ID" --query "[?name=='$name'].name" -o tsv 2>/dev/null || true)
+  existing_id=$(az ad app federated-credential list \
+    --id "$APP_OBJECT_ID" \
+    --query "[?name=='$name'] | [0].id" -o tsv 2>/dev/null || true)
 
-  if [[ -z "$existing" ]]; then
+  payload=$(cat <<EOF
+{
+  "name": "$name",
+  "issuer": "$issuer",
+  "subject": "$subject",
+  "audiences": ["api://AzureADTokenExchange"],
+  "description": "$description"
+}
+EOF
+)
+
+  if [[ -z "$existing_id" || "$existing_id" == "None" ]]; then
     echo "    Creating federated credential: $name"
-    az ad app federated-credential create --id "$APP_OBJECT_ID" --parameters "{
-      \"name\": \"$name\",
-      \"issuer\": \"https://token.actions.githubusercontent.com\",
-      \"subject\": \"$subject\",
-      \"audiences\": [\"api://AzureADTokenExchange\"],
-      \"description\": \"$description\"
-    }" --only-show-errors -o none
+    az ad app federated-credential create \
+      --id "$APP_OBJECT_ID" \
+      --parameters "$payload" \
+      --only-show-errors -o none
   else
-    echo "    Federated credential already exists: $name"
+    # Ensure the existing credential still matches the desired trust config.
+    match_query="[?name=='$name' && issuer=='$issuer' && subject=='$subject' && description=='$description' && contains(audiences, 'api://AzureADTokenExchange')] | length(@)"
+    is_match=$(az ad app federated-credential list \
+      --id "$APP_OBJECT_ID" \
+      --query "$match_query" \
+      -o tsv 2>/dev/null || echo "0")
+    if [[ "$is_match" == "1" ]]; then
+      echo "    Federated credential already correct: $name"
+    else
+      echo "    Updating federated credential: $name"
+      az ad app federated-credential update \
+        --id "$APP_OBJECT_ID" \
+        --federated-credential-id "$existing_id" \
+        --parameters "$payload" \
+        --only-show-errors -o none
+    fi
   fi
 }
 
@@ -164,21 +199,42 @@ create_federated_credential \
 # ------------------------------------------------------------------
 echo ">>> Step 4: Role Assignment"
 
-EXISTING_ROLE=$(az role assignment list \
-  --assignee "$SP_ID" \
-  --role "$OIDC_ROLE_NAME" \
-  --scope "$OIDC_ROLE_SCOPE" \
-  --query "[0].id" -o tsv 2>/dev/null || true)
+get_role_assignment_count() {
+  # --fill-principal-name false skips Graph display-name resolution; only count is needed.
+  az role assignment list \
+    --assignee-object-id "$SP_ID" \
+    --fill-principal-name false \
+    --role "$OIDC_ROLE_NAME" \
+    --scope "$OIDC_ROLE_SCOPE" \
+    --query "length(@)" -o tsv 2>/dev/null || echo "0"
+}
 
-if [[ -z "$EXISTING_ROLE" || "$EXISTING_ROLE" == "None" ]]; then
+EXISTING_ROLE_COUNT=$(get_role_assignment_count)
+
+if [[ "$EXISTING_ROLE_COUNT" == "0" ]]; then
   echo "    Assigning $OIDC_ROLE_NAME role on $OIDC_ROLE_SCOPE..."
-  az role assignment create \
+  if az role assignment create \
     --assignee-object-id "$SP_ID" \
     --assignee-principal-type ServicePrincipal \
     --role "$OIDC_ROLE_NAME" \
     --scope "$OIDC_ROLE_SCOPE" \
-    --only-show-errors -o none
-  echo "    Role assigned."
+    --only-show-errors -o none; then
+    echo "    Role assigned."
+  else
+    for _ in 1 2 3; do
+      EXISTING_ROLE_COUNT=$(get_role_assignment_count)
+      if [[ "$EXISTING_ROLE_COUNT" != "0" ]]; then
+        break
+      fi
+      sleep 5
+    done
+    if [[ "$EXISTING_ROLE_COUNT" == "0" ]]; then
+      echo "ERROR: Failed to assign $OIDC_ROLE_NAME at $OIDC_ROLE_SCOPE." >&2
+      echo "       Verify scope format and that your account has Owner/User Access Administrator at this scope." >&2
+      exit 1
+    fi
+    echo "    Role assignment already present (detected after create attempt)."
+  fi
 else
   echo "    $OIDC_ROLE_NAME role already assigned at $OIDC_ROLE_SCOPE."
 fi

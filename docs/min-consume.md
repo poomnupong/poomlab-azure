@@ -47,11 +47,11 @@ If discovery is blocked and no explicit list is supplied, the workflow fails wit
 ### OIDC/RBAC scope requirement for multi-subscription runs
 
 `az account list` only returns subscriptions where the OIDC principal has RBAC access.  
-The bootstrap script defaults to subscription-scoped assignment:
+The bootstrap script defaults to tenant-root assignment:
 
-- `Contributor` on `/subscriptions/<subscription-id>`
+- `Contributor` on `/`
 
-That scope is sufficient for single-subscription workflows, but not for tenant-wide `min-consume`.
+Do not scope OIDC RBAC only to a single subscription if you want tenant-wide `min-consume`.
 
 To enumerate and deploy across all subscriptions, assign OIDC at a higher scope:
 
