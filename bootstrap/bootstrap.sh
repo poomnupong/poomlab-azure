@@ -161,7 +161,7 @@ EOF
       --only-show-errors -o none
   else
     # Ensure the existing credential still matches the desired trust config.
-    match_query="[?name=='$name' && issuer=='$issuer' && subject=='$subject' && description=='$description' && length(audiences)==\`1\` && audiences[0]=='api://AzureADTokenExchange'] | length(@)"
+    match_query="[?name=='$name' && issuer=='$issuer' && subject=='$subject' && description=='$description' && contains(audiences, 'api://AzureADTokenExchange')] | length(@)"
     is_match=$(az ad app federated-credential list \
       --id "$APP_OBJECT_ID" \
       --query "$match_query" \
@@ -200,7 +200,7 @@ create_federated_credential \
 echo ">>> Step 4: Role Assignment"
 
 get_role_assignment_count() {
-  # Avoid extra Microsoft Graph lookups; we only need assignment count here.
+  # --fill-principal-name false skips Graph display-name resolution; only count is needed.
   az role assignment list \
     --assignee-object-id "$SP_ID" \
     --fill-principal-name false \
