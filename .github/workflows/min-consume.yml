@@ -1,0 +1,54 @@
+name: min-consume
+
+on:
+  schedule:
+    # Weekly Sunday 00:00 GMT
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      subscription_ids:
+        description: 'Optional comma/newline-separated subscription IDs. Leave blank to auto-discover with az account list.'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  MIN_CONSUME_LOCATION: westus3
+  MIN_CONSUME_RESOURCE_GROUP: rg-min-consume-westus3
+  MIN_CONSUME_VNET_NAME: vnet-min-consume-westus3
+  MIN_CONSUME_SUBNET_NAME: snet-min-consume
+  MIN_CONSUME_NSG_NAME: nsg-min-consume-westus3
+  MIN_CONSUME_PUBLIC_IP_NAME: pip-min-consume-westus3
+  MIN_CONSUME_NIC_NAME: nic-min-consume-westus3
+  MIN_CONSUME_VM_NAME: vm-min-consume-westus3
+  MIN_CONSUME_VNET_PREFIX: 10.234.0.0/16
+  MIN_CONSUME_SUBNET_PREFIX: 10.234.0.0/24
+  MIN_CONSUME_VM_SIZE: Standard_B4as_v2
+  # Latest Ubuntu LTS (non-Pro), ARM64-compatible with B4as_v2.
+  MIN_CONSUME_VM_IMAGE: Canonical:ubuntu-24_04-lts:server-arm64:latest
+  MIN_CONSUME_ADMIN_USERNAME: azureuser
+
+jobs:
+  deploy:
+    name: Deploy minimal footprint in all subscriptions
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+
+      - name: Deploy per subscription
+        env:
+          SUBSCRIPTION_IDS: ${{ github.event.inputs.subscription_ids || vars.MIN_CONSUME_SUBSCRIPTION_IDS || secrets.MIN_CONSUME_SUBSCRIPTION_IDS || '' }}
+        run: |
+          set -euo pipefail
+          ./.github/scripts/min-consume.sh deploy

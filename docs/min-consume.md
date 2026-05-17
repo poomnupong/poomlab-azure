@@ -1,0 +1,49 @@
+# Min-consume (subscription keep-alive)
+
+The `min-consume` workflows create and then remove a minimal footprint in **every accessible subscription** to keep subscriptions active per policy.
+
+- Deploy workflow: [`.github/workflows/min-consume.yml`](../.github/workflows/min-consume.yml)
+- Teardown workflow: [`.github/workflows/min-consume-teardown.yml`](../.github/workflows/min-consume-teardown.yml)
+- Shared logic: [`.github/scripts/min-consume.sh`](../.github/scripts/min-consume.sh)
+
+## Schedule
+
+- Deploy: **Sunday 00:00 GMT** (`0 0 * * 0`)
+- Teardown: **Tuesday 00:00 GMT** (`0 0 * * 2`) — 48 hours later
+
+## What gets deployed (per subscription)
+
+Region: **West US 3**
+
+- Resource group: `rg-min-consume-westus3`
+- VNET: `vnet-min-consume-westus3` (`10.234.0.0/16`)
+- Subnet: `snet-min-consume` (`10.234.0.0/24`)
+- NSG: `nsg-min-consume-westus3` (SSH allow rule, TCP/22)
+- Public IP: `pip-min-consume-westus3`
+- NIC: `nic-min-consume-westus3`
+- VM: `vm-min-consume-westus3`
+  - Size: `Standard_B4as_v2`
+  - Image: `Canonical:ubuntu-24_04-lts:server-arm64:latest` (latest Ubuntu LTS non-Pro)
+  - Disk: `Standard_LRS` only
+
+No premium extras are enabled.
+
+## Subscription discovery and fallback
+
+The workflows resolve subscriptions in this order:
+
+1. `workflow_dispatch` input `subscription_ids`
+2. Repository variable `MIN_CONSUME_SUBSCRIPTION_IDS`
+3. Repository secret `MIN_CONSUME_SUBSCRIPTION_IDS`
+4. Automatic discovery with `az account list --query "[?state=='Enabled'].id" -o tsv`
+
+If discovery is blocked and no explicit list is supplied, the workflow fails with an error asking for `subscription_ids` / `MIN_CONSUME_SUBSCRIPTION_IDS`.
+
+## Manual runs
+
+Both workflows support `workflow_dispatch` and optional `subscription_ids` (comma/newline separated).
+
+Examples:
+
+- `11111111-1111-1111-1111-111111111111,22222222-2222-2222-2222-222222222222`
+- One subscription ID per line
