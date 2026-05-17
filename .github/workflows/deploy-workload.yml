@@ -100,6 +100,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Resolve target regions from infra/regions.json
         id: regions
@@ -313,6 +315,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Resolve expected host inventory per enabled location
         id: hosts
@@ -328,6 +332,7 @@ jobs:
               location,
               vm: ("vm-" + $project + "-" + .gateway + "-" + .location)
             }]
+            | sort_by(.location)
             | group_by(.location)
             | map({
                 location: .[0].location,
