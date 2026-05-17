@@ -224,6 +224,7 @@ if [[ "$EXISTING_ROLE_COUNT" == "0" ]]; then
     EXISTING_ROLE_COUNT=$(get_role_assignment_count)
     if [[ "$EXISTING_ROLE_COUNT" == "0" ]]; then
       echo "ERROR: Failed to assign $OIDC_ROLE_NAME at $OIDC_ROLE_SCOPE." >&2
+      echo "       Verify scope format and that your account has Owner/User Access Administrator at this scope." >&2
       exit 1
     fi
     echo "    Role assignment already present (detected after create attempt)."
