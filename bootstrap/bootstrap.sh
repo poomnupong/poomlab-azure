@@ -10,7 +10,7 @@
 #
 # Prerequisites:
 #   - Azure CLI installed and logged in
-#   - Sufficient permissions (Owner or User Access Administrator on subscription)
+#   - Sufficient permissions (Owner or User Access Administrator on the target scope)
 #
 # Usage:
 #   ./bootstrap/bootstrap.sh [--subscription <sub-id>] [--location <region>] [--github-org <org>] [--github-repo <repo>] [--oidc-role-scope <scope>]

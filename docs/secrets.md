@@ -19,7 +19,7 @@ long-lived password or certificate is stored.
 |--------------------------|--------------------------------------------------|
 | `AZURE_CLIENT_ID`        | Application (client) ID of the Entra ID app registration |
 | `AZURE_TENANT_ID`        | Azure AD tenant ID                               |
-| `AZURE_SUBSCRIPTION_ID`  | Target Azure subscription ID (required by subscription-pinned workflows; `min-consume` auto-discovery does not require it) |
+| `AZURE_SUBSCRIPTION_ID`  | Target Azure subscription ID (required by subscription-scoped workflows; `min-consume` auto-discovery does not require it) |
 | `CI_SP_OBJECT_ID`        | Object ID of the CI service principal, used by `global` to assign the Key Vault Secrets Officer and Key Vault Contributor roles. Get: `az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv` |
 
 For multi-subscription `min-consume`, ensure the OIDC principal is assigned at management-group or tenant-root scope (not only a single subscription), otherwise `az account list` will only return that scoped subscription.
