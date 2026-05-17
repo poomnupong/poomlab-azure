@@ -106,7 +106,7 @@
           # fails with "You must set `networking.hostName` or
           # `services.comin.hostname` explicitly in your NixOS configuration."
           #
-          # Host-specific modules (which set `networking.hostName = "gw1"` etc.)
+          # Host-specific modules (which set `networking.hostName = "gw1-scus"` etc.)
           # are intentionally NOT imported here — they are layered on by Comin
           # at deploy time via the runtime nixos/flake.nix, which is a separate
           # flake from this one, so there is no priority conflict at deploy time.
@@ -143,7 +143,7 @@
           # time (deploy-workload + image-bake smoke-tier2).
           # For a public repo the token is optional but harmless: Comin
           # authenticates anyway, which just avoids rate-limit issues.
-          # After the first Comin apply the host config (e.g. gw1) switches
+          # After the first Comin apply the host config (e.g. gw1-scus) switches
           # tokenPath to "/run/agenix/comin-github-token" (agenix-managed);
           # the bootstrap file becomes inert.
           plaz.comin.tokenPath = "/etc/comin-bootstrap-token";
@@ -240,7 +240,7 @@
             # The image bakes `networking.hostName = "plaz-image"` (a
             # placeholder required to satisfy Comin's eval-time assertion;
             # see appModules above). At runtime the VM is actually called
-            # something else (gw1, plaz-smoke, …). Comin's only source of
+            # something else (gw1-scus, plaz-smoke, …). Comin's only source of
             # truth for which `nixosConfigurations.<host>` to evaluate is
             # the `hostname:` field of its YAML config; if that says
             # "plaz-image" the configuration won't exist in the runtime

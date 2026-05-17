@@ -194,7 +194,7 @@ jobs:
         run: |
           set -euo pipefail
           # Replicate the gallery image to every enabled region in
-          # infra/regions.json so secondary regions (plaz-sea, plaz-jpe,
+          # infra/regions.json so secondary regions (plaz-sea, plaz-krc,
           # ...) consume the image natively rather than via slow
           # cross-region reads from the primary.
           if [ ! -f infra/regions.json ]; then

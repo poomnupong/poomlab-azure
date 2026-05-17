@@ -39,7 +39,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea, plaz-jpe) to deploy just that one — works even if the region is disabled.'
+        description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea, plaz-krc) to deploy just that one — works even if the region is disabled.'
         required: true
         default: 'all'
   workflow_run:
@@ -630,7 +630,7 @@ jobs:
           echo "VM age public key: $VM_AGE_PUBKEY"
 
           # Read existing host entries from secrets.nix so we preserve other
-          # hosts (e.g. when rotating gw2 in Singapore, we must keep gw1's
+          # hosts (e.g. when rotating gw1-sea in Singapore, we must keep gw1-scus's
           # recipient entry intact so it can still decrypt the .age files).
           SECRETS_NIX=nixos/secrets/secrets.nix
           python3 - "$SECRETS_NIX" "$GATEWAY_NAME" "$VM_AGE_PUBKEY" <<'PY' > "${SECRETS_NIX}.new"
@@ -705,7 +705,7 @@ jobs:
           else
             git commit -m "chore: rotate agenix host key for ${GATEWAY_NAME} (Option A) [skip ci]"
             # Rebase on top of any commits pushed by earlier matrix legs
-            # (e.g. plaz pushes first; plaz-jpe runs next with a stale HEAD).
+            # (e.g. plaz pushes first; plaz-krc runs next with a stale HEAD).
             REMOTE_URL="https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git"
             git fetch --no-tags "$REMOTE_URL" main:refs/remotes/origin/main
             if ! git rebase refs/remotes/origin/main; then

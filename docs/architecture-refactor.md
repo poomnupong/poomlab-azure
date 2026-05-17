@@ -83,17 +83,17 @@ a re-architecture.
 | `image-bake` | Platform (shared service) | Layer Comin/agenix onto upstream VHD → publish gallery image version → smoke test → tag as **blessed** | Weekly schedule + `nixos/**` PRs + manual | **Yes** |
 | `global` | Platform (project-wide, region-pinned) | Compute Gallery + project Key Vault, deployed once for the whole project in the primary region | Manual + `infra/global.bicep` / `infra/modules/{gallery,keyvault}/**` changes | No |
 | `landing-zone` | Platform (regional) | Network RG (vnets, subnets, NSGs, route tables, peering anchors), monitoring RG — one per region | Manual + `infra/landing-zone.bicep` / regional module changes | No |
-| `deploy-workload` (renamed `deploy-infra`) | Workload | gw1 + future workloads; consumes the latest **blessed** image version; no SSH bootstrap | Per-PR + manual | No |
+| `deploy-workload` (renamed `deploy-infra`) | Workload | gw1-scus + future workloads; consumes the latest **blessed** image version; no SSH bootstrap | Per-PR + manual | No |
 | `comin-status` | Operations | Production health pulse | Schedule | No |
 | `destroy-infra` | Operations | Tear down workload RGs (unchanged) | Manual | No |
 
-**gw1 deviation from CAF:** strictly, a hub NVA belongs in a *connectivity*
-landing-zone subscription. We consciously place gw1 on the workload side
+**gw1-scus deviation from CAF:** strictly, a hub NVA belongs in a *connectivity*
+landing-zone subscription. We consciously place gw1-scus on the workload side
 because (a) it is the only NVA, (b) it changes more often than a "real"
 platform component would, and (c) keeping it in workload preserves the rule
 "platform deploys are rare and serious; workload deploys are frequent and
 routine" — the rule that gives us the operational savings. If a second
-workload appears, gw1 is promoted to a `connectivity` workflow without
+workload appears, gw1-scus is promoted to a `connectivity` workflow without
 rewriting much: the natural seam (the network RG it lives in) is already
 platform-managed.
 
@@ -144,13 +144,13 @@ Each phase is one PR. Each PR is independently revertible.
 - [x] **Phase 1 — Tracking PR (this doc).** No behavioral change. Establishes
       shared vocabulary and the rollout plan. *(PR #45, merged.)*
 - [x] **Phase 2 — `nixos/modules/comin.nix`.** Extract Comin + agenix wiring
-      from `nixos/hosts/gw1/` into a reusable module. No behavior change
+      from `nixos/hosts/gw1-scus/` into a reusable module. No behavior change
       yet — module is imported in the same place. *(No-op: the module was
       already factored into `nixos/modules/comin.nix` and
       `nixos/modules/agenix.nix` during earlier work; `nixos/flake.nix`
       imports them once per host. Confirmed no host-level duplication
       remains. Stale "deploy-infra bootstraps Comin" comments refreshed in
-      `nixos/flake.nix` and `nixos/hosts/gw1/default.nix`, and a pointer to
+      `nixos/flake.nix` and `nixos/hosts/gw1-scus/default.nix`, and a pointer to
       this doc / PR #45 was added to the top of `nixos/modules/comin.nix`
       so future agents land on the architectural context.)*
 - [x] **Phase 3 — `image-bake` workflow.** New workflow and `image-bake/flake.nix`
@@ -203,13 +203,13 @@ Each phase is one PR. Each PR is independently revertible.
 
 ## Adding a new region
 
-1. Allocate a non-overlapping VNET `/24` (e.g. `192.168.87.0/24` for plaz-jpe).
+1. Allocate a non-overlapping VNET `/24` (e.g. `192.168.87.0/24` for plaz-krc).
 2. Create `infra/environments/<env>-landing-zone.bicepparam` with the new
    `location` and address prefixes.
 3. Create `infra/environments/<env>-workload.bicepparam` with the new
-   `location` and a unique `gatewayName` (e.g. `gw3`).
+   `location` and a unique `gatewayName` (e.g. `gw1-<regionCode>`).
 4. Add the host NixOS config under `nixos/hosts/<gatewayName>/` (mirroring
-   `nixos/hosts/gw2/`) and register it in `nixos/flake.nix`
+   `nixos/hosts/gw1-sea/`) and register it in `nixos/flake.nix`
    (`nixosConfigurations.<gatewayName>`).
 5. Append an entry to **`infra/regions.json`** with `env`, `location`,
    `gateway`, `regionCode`, and `enabled: true`. This is the single source
@@ -280,7 +280,7 @@ suffices for public repos.
 
 1. ~~**Agenix host key delivery (D2 A vs B).**~~ **Resolved: Option A.**
    CI generates the ed25519 host key pair, stores the private key in Key Vault
-   (`kv-plaz-scus`, secret `gw1-ssh-host-ed25519-key`), re-encrypts agenix
+   (`kv-plaz-scus`, secret `gw1-scus-ssh-host-ed25519-key`), re-encrypts agenix
    secrets for the new recipient, and injects the private key via
    `cloud-init customData` on VM creation. Implemented in Phase 5.
    Note: Key Vault `kv-plaz-scus` must exist before `deploy-workload` runs;

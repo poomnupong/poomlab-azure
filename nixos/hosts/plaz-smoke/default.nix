@@ -31,7 +31,7 @@
   plaz.comin.tokenPath = "/etc/comin-bootstrap-token";
 
   # ── Azure Linux Agent (waagent) ──────────────────────────────────────
-  # Mirrors hosts/gw1/hardware.nix:58-63. The baked image ships with
+  # Mirrors hosts/gw1-scus/hardware.nix:58-63. The baked image ships with
   # waagent enabled, but `nixos-rebuild switch` to a config that doesn't
   # re-declare it disables the unit — which kills run-command, the
   # transport the smoke gate uses for generation polling. Without this

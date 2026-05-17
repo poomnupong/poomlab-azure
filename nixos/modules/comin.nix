@@ -11,7 +11,7 @@
 #   - "/etc/comin-bootstrap-token": baked image and smoke VM on first
 #     boot. Written by cloud-init customData at VM creation time.
 #     Works for both public and private repos.
-#   - "/run/agenix/comin-github-token": production hosts (e.g. gw1) after
+#   - "/run/agenix/comin-github-token": production hosts (e.g. gw1-scus) after
 #     agenix decrypts the secret using the VM's SSH host key.
 #
 # See docs/comin-deployment.md for the full runtime architecture.
@@ -146,7 +146,7 @@ in
           public repos and are required for private repos.
 
         "/run/agenix/comin-github-token"
-          Set on production hosts (e.g. gw1). After the first
+          Set on production hosts (e.g. gw1-scus). After the first
           Comin apply, agenix decrypts the secret from the .age file
           using the VM's SSH host key (injected at provisioning time
           via cloud-init customData by deploy-workload).

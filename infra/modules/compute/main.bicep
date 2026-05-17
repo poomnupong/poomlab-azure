@@ -6,8 +6,8 @@ param location string
 @description('Project name for resource naming')
 param projectName string
 
-@description('Gateway short name used in resource naming (e.g. gw1, gw2). Each gateway VM in a project must have a distinct name across regions, since the compute resource group is region-scoped but agenix/Comin tooling distinguishes hosts by this name.')
-param gatewayName string = 'gw1'
+@description('Gateway short name used in resource naming (e.g. gw1-scus, gw1-sea). Each gateway VM in a project must have a distinct name across regions, since the compute resource group is region-scoped but agenix/Comin tooling distinguishes hosts by this name.')
+param gatewayName string = 'gw1-scus'
 
 @description('VM size')
 param vmSize string

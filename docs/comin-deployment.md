@@ -24,7 +24,7 @@ VMs in this repository.
                            │ polls every 60s
                            ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Azure VM (gw1)                              │
+│                        Azure VM (gw1-scus)                          │
 │                                                                     │
 │  Comin service (baked in image) → pulls repo, nixos-rebuild switch │
 │  cloud-init (first boot)        → writes SSH host key from customData│
@@ -95,7 +95,7 @@ nixos/secrets/
 
 1. `deploy-workload` generates a fresh ed25519 host key pair in CI.
 2. Stores the private key in Key Vault `kv-plaz-scus`
-   (secret `gw1-ssh-host-ed25519-key`).
+   (secret `gw1-scus-ssh-host-ed25519-key`).
 3. Re-encrypts agenix secrets for the new recipient, commits
    `secrets.nix` + `.age` files to `main`.
 4. Passes the private key as base64 `customData` to Bicep.
@@ -163,7 +163,7 @@ Only needed if a VM is compromised or rebuilt:
 Every deployment (successful or failed) posts a commit status to GitHub
 via the `postDeploymentCommand` in `nixos/modules/comin.nix`.
 
-- **Context**: `comin/<hostname>` (e.g., `comin/gw1`)
+- **Context**: `comin/<hostname>` (e.g., `comin/gw1-scus`)
 - **State**: `success` or `failure`
 - **Visible on**: every commit on `main`, merge commits, and in PR histories.
 
@@ -188,7 +188,7 @@ and creates an issue with a checklist for reviewing all secrets.
 | `image-bake` | Saturday 14:00 UTC + `nixos/**`/`image-bake/**` changes + manual | Builds baked NixOS image, Tier 1 + Tier 2 smoke, tags `blessed=true` |
 | `global` | Manual + global Bicep path changes | Deploys project-wide shared services (Compute Gallery, Key Vault) once for the whole project, region-pinned to the primary region |
 | `landing-zone` | Manual + regional Bicep path changes | Deploys regional platform resources (monitoring, networking) — one deployment per region |
-| `deploy-workload` | Push to `main` on `infra/**` + manual | Deploys gw1 from blessed image; injects host key via cloud-init; no SSH bootstrap |
+| `deploy-workload` | Push to `main` on `infra/**` + manual | Deploys per-region gateway VMs (gw1-scus/gw1-sea/gw1-krc) from blessed image; injects host key via cloud-init; no SSH bootstrap |
 | `comin-status` | Daily + manual | Health check — queries Comin status on all VMs |
 | `ci-pr` | Pull request → `main` | Validation gate (Bicep lint + NixOS flake check) |
 | `update-flake-lock` | Weekly Monday 08:00 UTC + manual | Updates `nixos/flake.lock` and `image-bake/flake.lock`, opens PR |

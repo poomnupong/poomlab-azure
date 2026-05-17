@@ -1,6 +1,6 @@
 # plaz-smoke — Azure Gen2 hardware configuration (ephemeral smoke VM)
 #
-# Same hardware profile as gw1 — both run on the same baked Azure
+# Same hardware profile as gw1-scus — both run on the same baked Azure
 # Gen2 gallery image. This file exists to satisfy nix flake check
 # assertions (fileSystems, boot.loader) that would otherwise fail
 # during CI validation.
