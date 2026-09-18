@@ -209,21 +209,23 @@ Each phase is one PR. Each PR is independently revertible.
 3. Create `infra/environments/<env>-workload.bicepparam` with the new
    `location` and a unique `gatewayName` (e.g. `gw1-<regionCode>`).
 4. Add the host NixOS config under `nixos/hosts/<gatewayName>/` (mirroring
-   `nixos/hosts/gw1-sea/`) and register it in `nixos/flake.nix`
+   `nixos/hosts/gw1-scus/`) and register it in `nixos/flake.nix`
    (`nixosConfigurations.<gatewayName>`).
 5. Append an entry to **`infra/regions.json`** with `env`, `location`,
    `gateway`, `regionCode`, and `enabled: true`. This is the single source
    of truth — `landing-zone.yml`, `deploy-workload.yml`, `comin-status.yml`
    and `image-bake.yml` all read from it (no per-region workflow edits).
-6. Re-run `image-bake` (workflow_dispatch) so the next gallery image
-   version replicates to the new region — only newly created image
-   versions pick up the updated `--target-regions` list.
-7. Push to `main` (or manually dispatch `landing-zone` then
-   `deploy-workload`). Push automatically deploys every enabled region.
+6. Merge the change to `main`. Registry changes trigger `image-bake` with
+   the enabled replication targets. Workload creation waits for a
+   region-ready blessed image; a successful bake retries missing gateways.
+7. Follow [Region lifecycle](regions.md) for completion checks and recovery.
 
-To **pause** a region without removing its config: flip its `enabled` flag
-to `false` in `infra/regions.json`. Push/auto runs will skip it;
-`workflow_dispatch` with `environment=<env>` still works (escape hatch).
+To **pause** a gateway without deleting resources, use
+`gateway-power` with `action=deallocate`. Use `action=start` to resume it.
+`enabled=false` is **destructive retirement**, not pause: it deletes regional
+compute/network/monitoring groups and gallery replicas on push. Disabled
+regions cannot be manually deployed until re-enabled. Stopped/deallocated
+gateways stay untouched by normal workload deployment.
 
 ## Private repo support
 

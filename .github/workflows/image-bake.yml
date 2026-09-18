@@ -32,6 +32,12 @@ on:
       - 'nixos/flake.lock'
       - 'image-bake/**'
       - '.github/workflows/image-bake.yml'
+      - '.github/scripts/check-github-auth.py'
+      - '.github/scripts/*comin*'
+      - '.github/scripts/az-run-command.sh'
+      - '.github/scripts/gateway-power.py'
+      - 'infra/regions.json'
+      - '.github/tests/**'
   pull_request:
     branches: [main]
     paths:
@@ -40,6 +46,12 @@ on:
       - 'nixos/flake.lock'
       - 'image-bake/**'
       - '.github/workflows/image-bake.yml'
+      - '.github/scripts/check-github-auth.py'
+      - '.github/scripts/*comin*'
+      - '.github/scripts/az-run-command.sh'
+      - '.github/scripts/gateway-power.py'
+      - 'infra/regions.json'
+      - '.github/tests/**'
   workflow_dispatch:
 
 permissions:
@@ -69,6 +81,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate region registry
+        run: python3 .github/scripts/gateway-power.py --validate-registry
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v14
@@ -143,15 +158,20 @@ jobs:
       gallery_version: ${{ steps.stage.outputs.gallery_version }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify GitHub credential before publishing
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: python3 .github/scripts/check-github-auth.py
+
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id:       ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Checkout
-        uses: actions/checkout@v4
 
       - name: Verify Gallery exists
         # The gallery is managed by global.yml. Read the actual gallery
@@ -386,10 +406,22 @@ jobs:
     environment: production
 
     steps:
+      - name: Reserve smoke cleanup time
+        timeout-minutes: 1
+        run: echo "SMOKE_OBSERVATION_DEADLINE=$(( $(date +%s) + 32 * 60 ))" >> "$GITHUB_ENV"
+
       - name: Checkout
+        timeout-minutes: 2
         uses: actions/checkout@v4
 
+      - name: Verify GitHub credential before provisioning
+        timeout-minutes: 1
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: python3 .github/scripts/check-github-auth.py
+
       - name: Azure Login (OIDC)
+        timeout-minutes: 2
         uses: azure/login@v2
         with:
           client-id:       ${{ secrets.AZURE_CLIENT_ID }}
@@ -397,6 +429,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Generate ephemeral SSH keypair
+        timeout-minutes: 1
         id: ssh
         run: |
           set -euo pipefail
@@ -407,6 +440,7 @@ jobs:
           echo "dir=$d" >> "$GITHUB_OUTPUT"
 
       - name: Provision smoke-test VM
+        timeout-minutes: 10
         id: provision
         env:
           GALLERY_VERSION: ${{ needs.publish.outputs.gallery_version }}
@@ -499,6 +533,7 @@ jobs:
           echo "vm_ip=$VM_IP"        >> "$GITHUB_OUTPUT"
 
       - name: Wait for waagent ready
+        timeout-minutes: 6
         env:
           SMOKE_RG: ${{ steps.provision.outputs.smoke_rg }}
           VM_NAME:  ${{ steps.provision.outputs.vm_name }}
@@ -532,6 +567,7 @@ jobs:
           } || true
 
       - name: Write bootstrap token via run-command
+        timeout-minutes: 3
         # cloud-init's write_files directive is silently ignored on NixOS
         # because the NixOS cloud-init module does not include the write-files
         # module in its generated cloud.cfg. Bypass cloud-init entirely by
@@ -567,72 +603,22 @@ jobs:
             --output json
 
       - name: Wait for Comin to complete first deployment
+        timeout-minutes: 31
         env:
           SMOKE_RG: ${{ steps.provision.outputs.smoke_rg }}
           VM_NAME:  ${{ steps.provision.outputs.vm_name }}
         run: |
           set -euo pipefail
-          # NixOS: waagent run-command uses a minimal PATH (/usr/bin:/bin).
-          # All NixOS system binaries live under /run/current-system/sw/bin.
-          # This preamble must be the first line of every run-command script.
-          NIXOS_PATH_PREAMBLE='export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin:$PATH'
-
-          echo "Polling for Comin to complete its first deployment (generation >= 1)..."
-          for i in $(seq 1 30); do
-            OUT=$(az vm run-command invoke \
-              --resource-group "$SMOKE_RG" --name "$VM_NAME" \
-              --command-id RunShellScript \
-              --scripts "
-                $NIXOS_PATH_PREAMBLE
-                set -euo pipefail
-                # Generation count in the Comin-managed profile.
-                # Before any deployment: 0 entries. After first successful deploy: generation 1.
-                gen_count=\$(nix-env --list-generations --profile /nix/var/nix/profiles/system-profiles/comin 2>/dev/null | grep -cE '^[[:space:]]*[0-9]+' || true)
-                gen_count=\${gen_count:-0}
-                echo \"GENERATION_COUNT=\$gen_count\"
-                # Also emit current hostname to confirm plaz-smoke config is applied
-                echo \"HOSTNAME=\$(hostname)\"
-                # Detect permanent crash-loop — fail fast instead of polling 30 times.
-                # systemd stops restarting a service after too many rapid failures
-                # (StartLimitHit); at that point SubState=failed and is-failed=failed.
-                comin_state=\$(systemctl is-failed comin.service 2>/dev/null || true)
-                sub_state=\$(systemctl show -p SubState --value comin.service 2>/dev/null || echo 'unknown')
-                if [ \"\$comin_state\" = 'failed' ] && [ \"\$sub_state\" = 'failed' ]; then
-                  echo 'COMIN_STATE=crash-loop'
-                else
-                  echo 'COMIN_STATE=ok'
-                fi
-                # Emit comin journal tail for visibility
-                echo '=== comin journal ==='
-                journalctl -u comin --no-pager -n 20 2>/dev/null || true
-              " \
-              --output json 2>/dev/null || echo '{"value":[{"message":""}]}')
-            STDOUT=$(echo "$OUT" | jq -r '.value[0].message // ""')
-            echo "--- attempt $i ---"
-            echo "$STDOUT"
-            GEN=$(echo "$STDOUT" | grep -oP 'GENERATION_COUNT=\K[0-9]+' || echo "0")
-            COMIN_STATE=$(echo "$STDOUT" | grep -oP 'COMIN_STATE=\K\S+' || echo "ok")
-            # Detect permanent crash-loop and fail immediately rather than
-            # burning 30 poll rounds (~30 min) before giving up.
-            if [ "$COMIN_STATE" = "crash-loop" ]; then
-              echo "::error::comin.service is in a permanent crash-loop (StartLimitHit). Check the token file and comin config. Aborting early."
-              exit 1
-            fi
-            if [ "${GEN:-0}" -ge 1 ]; then
-              echo "✅ Comin applied successfully (generation count: $GEN)"
-              COMIN_DEPLOYED=true
-              echo "COMIN_DEPLOYED=true" >> "$GITHUB_ENV"
-              break
-            fi
-            echo "Generation count: ${GEN:-0} — waiting 30s..."
-            sleep 30
-          done
-          if [ "${COMIN_DEPLOYED:-false}" != "true" ]; then
-            echo "::error::Comin did not complete a deployment after 30 attempts (~15 min)"
+          REMAINING=$(( SMOKE_OBSERVATION_DEADLINE - $(date +%s) ))
+          if [ "$REMAINING" -le 0 ]; then
+            echo "::error::Smoke observation budget exhausted; reserving time for cleanup."
             exit 1
           fi
+          [ "$REMAINING" -le 1800 ] || REMAINING=1800
+          python3 .github/scripts/comin-status.py --wait --timeout-seconds "$REMAINING"
 
       - name: Assert via run-command (post-Comin)
+        timeout-minutes: 2
         # SSH cannot be used here: when Comin applies plaz-smoke's NixOS
         # config, base.nix's declarative openssh.authorizedKeys.keys (empty)
         # overwrites the ephemeral key Azure injected at VM creation.
@@ -670,15 +656,27 @@ jobs:
 
       - name: Tear down smoke RG
         if: always()
+        timeout-minutes: 6
         env:
           SMOKE_RG: ${{ steps.provision.outputs.smoke_rg }}
         run: |
+          set -euo pipefail
           [ -z "${SMOKE_RG:-}" ] && exit 0
-          az group delete --name "$SMOKE_RG" --yes --no-wait \
-            || echo "::warning::Failed to queue deletion of $SMOKE_RG — manual cleanup may be required"
-          echo "Smoke RG $SMOKE_RG deletion queued"
+          EXISTS=$(az group exists --name "$SMOKE_RG")
+          if [ "$EXISTS" = "false" ]; then
+            echo "Smoke RG $SMOKE_RG is already absent"
+            exit 0
+          fi
+          if [ "$EXISTS" != "true" ]; then
+            echo "::error::Could not determine whether smoke RG $SMOKE_RG exists"
+            exit 1
+          fi
+          az group delete --name "$SMOKE_RG" --yes --no-wait
+          az group wait --name "$SMOKE_RG" --deleted --interval 10 --timeout 300
+          echo "Smoke RG $SMOKE_RG deletion completed"
 
       - name: Tag image version as blessed
+        timeout-minutes: 2
         env:
           GALLERY_VERSION: ${{ needs.publish.outputs.gallery_version }}
         run: |
@@ -709,6 +707,7 @@ jobs:
           echo "✅ Tagged $GALLERY_VERSION as blessed=true (Tier 1 + Tier 2 passed)"
 
       - name: Job summary
+        timeout-minutes: 1
         if: always()
         env:
           GALLERY_VERSION: ${{ needs.publish.outputs.gallery_version }}

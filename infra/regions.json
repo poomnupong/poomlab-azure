@@ -6,6 +6,8 @@
     "  - .github/workflows/deploy-workload.yml  (matrix discover + inline landing-zone)",
     "  - .github/workflows/landing-zone.yml     (matrix discover, standalone use only)",
     "  - .github/workflows/comin-status.yml     (matrix discover)",
+    "  - .github/workflows/gateway-power.yml    (manual status/start/deallocate)",
+    "  - .github/workflows/image-bake.yml       (gallery replication targets)",
     "",
     "Fields:",
     "  env         Selects infra/environments/<env>-{landing-zone,workload}.bicepparam.",
@@ -14,10 +16,9 @@
     "  gateway     Per-region gateway host name (gw1-scus, gw1-sea, ...). Becomes the NixOS",
     "              hostname and VM name suffix. Must also exist as nixos/hosts/<gateway>/.",
     "  regionCode  Short code used in resource naming (legacy; exported as env var only).",
-    "  enabled     true = region is deployed by push/auto runs. false = region is skipped",
-    "              entirely (no landing-zone, no workload, no comin-status). Manual",
-    "              workflow_dispatch with environment=<env> still deploys a disabled",
-    "              region (useful for one-off teardown/repair).",
+    "  enabled     true = region remains managed. false = regional infrastructure is",
+    "              torn down on the next push; this is NOT a gateway power switch.",
+    "              Manual deploy/power operations also require enabled=true.",
     "  primary     Optional marker for the project's primary region (gallery + Key Vault).",
     "",
     "To enable a new region end-to-end:",
@@ -28,11 +29,14 @@
     "  5. Push to main — deploy-workload auto-deploys landing-zone + workload in one run.",
     "",
     "To disable a region: flip 'enabled' to false (keep the entry) and push.",
-    "deploy-workload then automatically tears down all matching regional",
-    "resource groups (rg-<project>-*-<location>). The entry is preserved so",
-    "the region can be redeployed on demand via workflow_dispatch.",
+    "deploy-workload then tears down that region's compute/network/monitoring",
+    "groups and gallery replicas. Re-enable the entry before redeploying.",
     "To remove a region entirely: delete the entry; the next push tears down",
-    "its resource groups, and manual redeploy will no longer be available."
+    "its regional resources, and manual redeploy will no longer be available.",
+    "To turn a gateway off without deleting resources: gateway-power, action=deallocate.",
+    "To turn it back on: gateway-power, action=start. Use the env field as the target.",
+    "Workload deployment preserves stopped/deallocated gateways until explicitly started.",
+    "The primary region cannot be disabled/removed while shared services are pinned there."
   ],
   "regions": [
     {
@@ -42,13 +46,6 @@
       "regionCode": "scus",
       "enabled": true,
       "primary": true
-    },
-    {
-      "env": "plaz-sea",
-      "location": "southeastasia",
-      "gateway": "gw1-sea",
-      "regionCode": "sea",
-      "enabled": true
     }
   ]
 }

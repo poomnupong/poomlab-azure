@@ -1,7 +1,7 @@
 # Copilot Auto-Retry on CI Failure
 #
 # When a CI workflow fails on a Copilot-created branch (copilot/**), or on main
-# for post-merge workflows (landing-zone, deploy-workload), this workflow
+# for any of the watched workflows, this workflow
 # automatically creates a new GitHub Issue assigned to Copilot that contains the
 # failure details and instructions to fix, closing the feedback loop without
 # human intervention.
@@ -15,8 +15,8 @@
 #   - Restricted to same-repository runs to prevent fork-branch abuse.
 #
 # Watched workflows:
-#   ci-pr, image-bake      — run on PR branches (copilot/**)
-#   landing-zone, deploy-workload — run on main after merge
+#   ci-pr, image-bake, global, landing-zone, deploy-workload
+#   Failures on main or copilot/** are eligible.
 
 name: Copilot Auto-Retry on CI Failure
 
@@ -29,9 +29,7 @@ on:
       - "landing-zone"
       - "deploy-workload"
     types: [completed]
-    # No branches filter here — filtering is done in the job condition so that:
-    #   - ci-pr / image-bake  → copilot/** branches (PR context)
-    #   - global / landing-zone / deploy-workload → main branch (post-merge context)
+    # Branch and repository identity are checked in the job condition.
 
 permissions:
   issues: write    # create and label issues
@@ -48,12 +46,14 @@ jobs:
   auto-retry:
     # Only act on failures from:
     #   - copilot/** branches (Copilot PR work), OR
-    #   - main branch (post-merge failures for landing-zone / deploy-workload)
+    #   - main branch (including scheduled image-bake failures)
     # AND only from the same repository — not from fork PRs whose branch
     # happens to be named copilot/... (fork runs have a different repo id).
     if: |
       github.event.workflow_run.conclusion == 'failure' &&
-      github.event.workflow_run.head_repository_id == github.repository_id &&
+      github.event.workflow_run.head_repository.id &&
+      github.event.repository.id &&
+      github.event.workflow_run.head_repository.id == github.event.repository.id &&
       (
         startsWith(github.event.workflow_run.head_branch, 'copilot/') ||
         github.event.workflow_run.head_branch == 'main'
@@ -72,7 +72,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --description "Auto-created issue for Copilot CI failure retry" \
             --color "e11d48" \
-            2>/dev/null || true
+            --force
 
       # ----------------------------------------------------------------
       # 2. Count how many auto-retry issues already exist for this branch.
@@ -82,8 +82,9 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          set -euo pipefail
           # Use exact matching against the title suffix " on `<branch>`" to avoid
           # false positives when one branch name is a prefix of another (e.g.
           # copilot/fix vs copilot/fix-v2). A backtick literal is stored in BT
@@ -91,22 +92,16 @@ jobs:
           BT='`'
           SEARCH=" on ${BT}${BRANCH}${BT}"
           # --limit 1000 so count is accurate even if many issues exist.
-          # Use `|| echo "0"` so COUNT is never empty if gh fails;
-          # then validate it's a plain integer and default to 0 if not.
-          RAW=$(gh issue list \
+          if ! ISSUES=$(gh issue list \
             --repo "${{ github.repository }}" \
             --label "copilot-auto-retry" \
             --state all \
             --limit 1000 \
-            --json title \
-            --jq '.[].title' 2>/dev/null | \
-            grep -cF "$SEARCH" || echo "0")
-          if [[ "${RAW}" =~ ^[0-9]+$ ]]; then
-            COUNT="${RAW}"
-          else
-            echo "::warning::Could not fetch retry count (got '${RAW}'); defaulting to 0"
-            COUNT=0
+            --json title); then
+            echo "::error::Could not fetch retry history; refusing to bypass the retry cap."
+            exit 1
           fi
+          COUNT=$(jq --arg suffix "$SEARCH" '[.[] | select(.title | endswith($suffix))] | length' <<< "$ISSUES")
           echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
           echo "Auto-retry issues for '${BRANCH}': ${COUNT}"
           if [ "${COUNT}" -ge 5 ]; then
@@ -144,8 +139,8 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          BRANCH="${{ github.event.workflow_run.head_branch }}"
           PR_NUM=$(gh pr list \
             --repo "${{ github.repository }}" \
             --head "$BRANCH" \

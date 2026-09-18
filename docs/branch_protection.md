@@ -1,119 +1,100 @@
-# Branch Protection Setup Guide
+# Main-branch protection
 
-This guide walks you through configuring branch protection on `main` for this repository. Because `main` is the production deployment branch for both Bicep infrastructure and NixOS host configurations, protecting it prevents accidental direct pushes and ensures all changes pass validation before merging.
+`main` is the deployment branch for Bicep workflows and Comin's runtime
+configuration. Use the existing **repository ruleset**, rather than creating a
+second legacy branch-protection configuration.
 
----
+## Observed configuration and proposed checks
 
-## Why Branch Protection Matters for This Repo
+At the September 2026 health review, active ruleset `ruleset01` (ID `15896030`)
+targeted the default branch. It required PRs, blocked deletion and
+non-fast-forward pushes, and enabled Copilot review. It did **not** require
+status checks. Its approval count was zero, and it had configured bypass actors.
+The CLI's legacy `/branches/main/protection` endpoint returned 404 even though
+the ruleset was active.
 
-| Risk without protection | Mitigation |
-|---|---|
-| A direct push to `main` could trigger `deploy-infra` or `deploy-nixos` without any code review | Branch protection requires PRs before merging |
-| A bad Bicep template or broken NixOS flake could reach production | Required status checks (`ci-pr.yml`) catch errors before merge |
-| An admin could bypass protections to "hotfix" quickly, accidentally breaking infra | "Do not allow bypassing" enforces checks for everyone including admins |
-| History rewrites could corrupt the deployment audit trail | Linear history requirement prevents force-pushes |
+Adding required checks is a separate repository-administrator decision. This
+document is a proposal, not evidence that repository settings were changed.
+Preserve the existing target, enforcement, PR policy, and bypass actors unless
+the owner explicitly approves changing them.
 
----
-
-## Step-by-step via GitHub UI
-
-1. Go to **Settings → Branches** in the repository.
-2. Under **Branch protection rules**, click **Add branch protection rule** (or **Edit** if a rule for `main` already exists).
-3. In **Branch name pattern**, enter: `main`
-
-### Required settings
-
-#### Require a pull request before merging
-- ✅ **Enable**: "Require a pull request before merging"
-- Set **Required number of approvals** to `1` (recommended for a team; set to `0` for solo use if desired)
-- ✅ **Dismiss stale pull request approvals when new commits are pushed** — ensures re-review after changes
-
-#### Require status checks to pass before merging
-- ✅ **Enable**: "Require status checks to pass before merging"
-- ✅ **Require branches to be up to date before merging** — prevents stale PR merges
-
-Click **Add required status checks** (the search box) and add the following job names. These job names must **exactly** match the `name:` field in the workflow YAML:
-
-| Job name to search for | Workflow | Description |
+| Required check to propose | Workflow | Behavior |
 |---|---|---|
-| `Validate Bicep` | `ci-pr.yml` (`validate-infra` job) | Bicep lint + `az deployment what-if` |
-| `Validate NixOS` | `ci-pr.yml` (`validate-nixos` job) | `nix flake check ./nixos` |
+| `Validate Bicep` | `ci-pr.yml` | Always produces a result; validates Bicep/what-if when infrastructure paths change |
+| `Validate NixOS` | `ci-pr.yml` | Always produces a result; checks the flake when NixOS paths change |
+| `Validate CI automation` | `ci-pr.yml` | Always runs helper/event regression tests and workflow lint |
 
-> **Note:** Status check names only appear in the search box **after** `ci-pr.yml` has run at least once on a pull request. If the checks don't appear yet, open a test PR (even a trivial README change) to trigger the workflow, then come back and add the checks.
+The first two close the gap identified in the review. Add the automation check
+once its first PR run has completed successfully. Select the GitHub Actions
+integration as the expected check source where GitHub offers that control.
 
-#### Do not allow bypassing the above settings
-- ✅ **Enable**: "Do not allow bypassing the above settings" — prevents admins from force-merging without checks
+Do **not** make `Build & Tier 1 Smoke` globally required yet: `image-bake.yml`
+has workflow-level path filters, so unrelated PRs might wait forever for a
+check that never starts. An always-emitted image gate would need a separate
+workflow design change. Gallery publication and Tier 2 Azure smoke intentionally
+do not run on PRs.
 
----
+## Updating the existing ruleset
 
-## Optional (Recommended) Settings
+1. Open **Settings → Rules → Rulesets → ruleset01**.
+2. Preserve its existing enforcement, branch targets, bypass list, and other
+   rules. Do not replace the whole configuration with an example payload.
+3. Enable **Require status checks to pass**, then select the exact check names
+   listed above that have already run successfully.
+4. Enable **Require branches to be up to date before merging** if the owner
+   approves strict checking.
+5. Save only after administrator approval, and read back the effective rules.
 
-### Require linear history
-- ✅ **Enable**: "Require linear history" — enforces squash or rebase merges, keeping `git log` clean and each commit independently deployable
-
-### Restrict who can push to matching branches
-If you want to lock down direct pushes entirely (even from admins who might accidentally push):
-- ✅ **Restrict pushes that create matching branches** and leave the allow list empty
-
----
-
-## Via GitHub CLI (scripted setup)
-
-You can set up branch protection programmatically using the GitHub API. Replace `YOUR_ORG` and `YOUR_REPO` with your values:
+For read-only inspection:
 
 ```bash
-gh api \
-  --method PUT \
-  -H "Accept: application/vnd.github+json" \
-  /repos/YOUR_ORG/YOUR_REPO/branches/main/protection \
-  --input - <<'EOF'
-{
-  "required_status_checks": {
-    "strict": true,
-    "contexts": [
-      "Validate Bicep",
-      "Validate NixOS"
-    ]
-  },
-  "enforce_admins": true,
-  "required_pull_request_reviews": {
-    "dismiss_stale_reviews": true,
-    "require_code_owner_reviews": false,
-    "required_approving_review_count": 1
-  },
-  "restrictions": null,
-  "required_linear_history": true,
-  "allow_force_pushes": false,
-  "allow_deletions": false,
-  "block_creations": false,
-  "required_conversation_resolution": true
-}
-EOF
+gh api repos/poomnupong/poomlab-azure/rules/branches/main
+gh api repos/poomnupong/poomlab-azure/rulesets/15896030
 ```
 
-> **Tip:** Run `gh auth login` first if you haven't already. The token needs `repo` scope (or `admin:org` for org repos).
+For an approved API update, start with a fresh read of that ruleset, preserve
+the documented writable fields and existing rules, and add only the agreed
+`required_status_checks` rule. Check for intervening edits before writing and
+inspect `/rules/branches/main` afterward. Do not use a legacy protection PUT
+that silently imposes a different approval/bypass policy.
 
----
+For a ruleset with the two initially proposed checks, the additional rule is:
 
-## Production Environment Protection
+```json
+{
+  "type": "required_status_checks",
+  "parameters": {
+    "required_status_checks": [
+      {"context": "Validate Bicep", "integration_id": 15368},
+      {"context": "Validate NixOS", "integration_id": 15368}
+    ],
+    "strict_required_status_checks_policy": true,
+    "do_not_enforce_on_create": false
+  }
+}
+```
 
-The `deploy-infra` and `deploy-nixos` workflows both use `environment: production`. You can add an extra layer of protection specifically for deployments:
+Verify the GitHub Actions integration ID against an actual check run before
+using this example. This fragment is not a complete ruleset replacement.
+Add `Validate CI automation` to the list only after it exists on the repository.
 
-1. Go to **Settings → Environments → production**
-2. Add **Required reviewers** — at least one person must approve before the deploy job runs
-3. Set a **Wait timer** (e.g. 5 minutes) to give you a window to cancel accidental deploys
-4. Optionally restrict which branches can deploy to `production` (only `main` should deploy)
+## Deployment and bypass implications
 
-This means even after a PR is merged to `main`, the deployment itself is gated behind a manual approval step in the GitHub Actions UI.
+`image-bake` publishes and runs its real-Azure smoke job on `main` using the
+`production` environment. `deploy-workload` manages workload infrastructure.
+Review their triggers before merging changes: a PR merge is not merely a
+documentation operation when deployment paths change.
 
----
+Comin on running gateways polls `main` independently of GitHub environment
+approval gates. It uses the agenix-managed GitHub credential, not an ephemeral
+Actions token, for ongoing operation. A `production` environment reviewer does
+not gate those on-host pulls. Keep gateways stopped when that is the approved
+operating state.
 
-## NixOS Deploy — No SSH Private Key Required
+The deployment workflow also commits encrypted-secret/recipient updates.
+Review how its identity interacts with existing bypass rules before tightening
+access. Do not remove bypass actors, change required approval counts, enable
+linear history, or change merge methods as an incidental part of adding checks.
 
-The `deploy-nixos` workflow uses a **GitOps pull model** rather than SSH/Colmena:
-
-- **No SSH private key is needed.** The workflow uses the existing OIDC Azure login to invoke `az vm run-command invoke` on each target VM via the Azure control plane.
-- **The `GITHUB_TOKEN` is passed ephemerally.** Each `az vm run-command invoke` call passes the built-in `GITHUB_TOKEN` as an environment variable so the VM can pull its NixOS configuration from this private repository. The token is scoped to the workflow run and expires when the run ends — it is never written to disk or stored on the VM.
-- **The VM runs `nixos-rebuild switch --flake` itself.** It pulls the config directly from GitHub using the ephemeral token, applies the configuration, and the token is then discarded.
-
-This means the only secrets required are the standard OIDC set (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`) — the same secrets already used by `deploy-infra`.
+See [secret rotation and recovery](comin-deployment.md#rotating-the-github-pat)
+and the [secrets reference](secrets.md) for the separate credential copies.

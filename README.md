@@ -90,19 +90,20 @@ Each host under `nixos/hosts/<vmname>/` is self-contained — `default.nix` impo
 
 | Workflow | File | Trigger | Purpose |
 |---|---|---|---|
-| `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | Validation only. Bicep lint + NixOS flake check. |
+| `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | Validation only. Bicep lint, NixOS flake check, and CI helper/guard regression tests and workflow lint. |
 | `image-bake` | `.github/workflows/image-bake.yml` | Saturday 14:00 UTC + `nixos/**`/`image-bake/**` changes + manual | Builds baked NixOS image with Comin pre-installed. Tier 1 QEMU smoke + Tier 2 real-Azure smoke. Tags `blessed=true` on success. |
 | `global` | `.github/workflows/global.yml` | Manual + global Bicep path changes | Deploys project-wide shared services (Compute Gallery, Key Vault) once for the whole project, region-pinned to the primary region. |
 | `landing-zone` | `.github/workflows/landing-zone.yml` | Manual + landing-zone Bicep path changes | Deploys regional platform resources (monitoring, VNET/NSGs). Standalone use only — deploy-workload handles this automatically when enabling a new region. |
 | `deploy-workload` | `.github/workflows/deploy-workload.yml` | Push to `main` on `infra/workload.bicep`, `infra/landing-zone.bicep`, `infra/regions.json` + manual + after `global` completes | Deploys all enabled regions. Auto-deploys landing-zone inline for new regions. Resolves newest `blessed=true` image. Option A agenix key delivery via cloud-init. No SSH bootstrap. |
-| `comin-status` | `.github/workflows/comin-status.yml` | Daily + manual | Health check — Comin status on all VMs. |
+| `comin-status` | `.github/workflows/comin-status.yml` | Daily + manual | Reports current Comin health on running VMs; stopped/absent gateways are explicitly not checked and are never started. |
+| `gateway-power` | `.github/workflows/gateway-power.yml` | Manual, main only | Per-environment `status`, `start`, or `deallocate`, serialized with regional deployment/cleanup. Does not change region membership. |
 | `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly Monday 08:00 UTC + manual | Updates `nixos/flake.lock` and `image-bake/flake.lock`, opens PR. |
 | `rotate-secrets-reminder` | `.github/workflows/rotate-secrets-reminder.yml` | Monthly 1st + manual | Creates GitHub issue with secrets rotation checklist. |
 | `destroy-infra` | `.github/workflows/destroy-infra.yml` | Manual only | Deletes all Azure resource groups. |
 | `min-consume` | `.github/workflows/min-consume.yml` | Weekly Sunday 00:00 UTC + manual | Deploys a minimal keep-alive footprint per subscription in West US 3 (`rg-min-consume-westus3`, VNET/subnet, NSG, Standard_B4as_v2 VM on latest Ubuntu LTS non-Pro x86_64 image). Optional SSH rule is controlled by `MIN_CONSUME_SSH_SOURCE`. |
 | `min-consume-teardown` | `.github/workflows/min-consume-teardown.yml` | Weekly Tuesday 00:00 UTC + manual | Deletes `rg-min-consume-westus3` in every targeted subscription (48 hours after `min-consume`). |
 
-**Key principle:** `ci-pr` acts as the gate — it runs on every PR and must pass before merging. After merge to `main`, Comin (running on each VM) polls this repo every 60 seconds and applies the new config automatically. No SSH bootstrap is ever needed — Comin is baked into the gallery image and starts on first boot.
+**Key principle:** `ci-pr` runs on every PR; configure its checks as required in the main-branch ruleset to enforce validation before merging. After merge to `main`, Comin on running VMs polls this repo every 60 seconds and applies new configuration, provided its credential remains valid. Comin is baked into the gallery image and starts on first boot.
 
 ### Min-consume subscription keep-alive
 
@@ -118,7 +119,25 @@ See [`docs/min-consume.md`](docs/min-consume.md) for full details.
 
 ## Branch Protection
 
-Branch protection on `main` is strongly recommended to ensure all changes pass validation before reaching production. See [`docs/branch_protection.md`](docs/branch_protection.md) for a complete setup guide, including the required status check names and a GitHub CLI command for scripted configuration.
+Branch protection on `main` is strongly recommended to ensure all changes pass validation before reaching production. See [`docs/branch_protection.md`](docs/branch_protection.md) for the existing ruleset, proposed required checks, and read-only inspection commands.
+
+The existing default-branch ruleset must explicitly require status checks;
+having a PR rule alone does not enforce CI. Changes to its rules or bypass
+actors require administrator approval.
+
+### CI automation checks
+
+Run helper and event-guard regression tests without credentials or Azure access:
+
+```bash
+python3 -B -m unittest discover -s .github/tests -v
+```
+
+`Validate CI automation` also runs Actionlint on the affected automation
+workflows. PAT preflights distinguish credential rejection from transport
+failures before lock updates or Azure publication/provisioning. See
+[`docs/secrets.md`](docs/secrets.md) for rotation and its separate fleet-token
+recovery requirements.
 
 ## NixOS Configuration
 
@@ -199,7 +218,7 @@ Go to **Settings → Secrets and variables → Actions → Secrets** (or use the
 | `AZURE_TENANT_ID` | all Azure workflows | Azure AD tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | all Azure workflows | Target subscription ID |
 | `ADMIN_SSH_PUBLIC_KEY` | `deploy-workload`, `ci-pr` | SSH public key injected into VM `authorized_keys` |
-| `GH_PAT` | `update-flake-lock`, `deploy-workload` | Fine-grained PAT (Contents + Pull requests + Commit statuses, R/W) |
+| `GH_PAT` | `update-flake-lock`, `image-bake`, `deploy-workload` | Fine-grained PAT (Contents, Pull requests, Commit statuses, and Issues for failure reporting, R/W); rotate the encrypted fleet copy separately. |
 | `CI_SP_OBJECT_ID` | `global` | Object ID of CI service principal for Key Vault Secrets Officer. Get: `az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv` |
 
 See [docs/secrets.md](docs/secrets.md) for full setup instructions for each secret.
@@ -211,7 +230,7 @@ gh secret set AZURE_CLIENT_ID --body "<value from bootstrap output>"
 gh secret set AZURE_TENANT_ID --body "<value from bootstrap output>"
 gh secret set AZURE_SUBSCRIPTION_ID --body "<value from bootstrap output>"
 gh secret set ADMIN_SSH_PUBLIC_KEY --body "$(cat ~/.ssh/id_ed25519.pub)"
-gh secret set GH_PAT --body "<your fine-grained PAT>"
+gh secret set GH_PAT # enter the value at the hidden prompt
 CI_SP_OID=$(az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv)
 gh secret set CI_SP_OBJECT_ID --body "$CI_SP_OID"
 ```
@@ -228,9 +247,9 @@ The deployment flow has three steps run in order:
 
 3. **Run `deploy-workload`** — deploys all enabled regions from the newest `blessed=true` image. Automatically deploys the regional landing-zone (VNET, monitoring) inline if it doesn't exist yet, so no separate `landing-zone` workflow run is required. Injects the SSH host key via cloud-init `customData`. Comin starts on first boot and applies the full NixOS config automatically. No SSH bootstrap required.
 
-> **Enabling a region:** Flip `enabled` to `true` in `infra/regions.json` and push. `deploy-workload` auto-deploys both landing-zone and workload for the new region.
-> **Disabling a region:** Flip `enabled` to `false` in `infra/regions.json` (keep the entry) and push. `deploy-workload` automatically detects regions that were previously enabled but are now disabled and tears down all matching regional resource groups (`rg-<project>-*-<location>`). The disabled entry can still be redeployed on demand via `workflow_dispatch` with that single environment.
-> **Removing a region:** Delete its entry from `infra/regions.json` entirely. The next push tears down its resource groups; afterwards, manual redeploy via `workflow_dispatch` is no longer possible (re-add the entry first).
+> **Add/remove regions:** Follow [Region lifecycle](docs/regions.md). The registry controls membership, not power. Disabling or removing a secondary region tears down its compute/network/monitoring groups and removes its gallery replicas; shared gallery and Key Vault resources are preserved.
+> **Turn a gateway off/on:** Run `gateway-power` on `main`, choose its environment (currently `plaz`), and select `deallocate` or `start`. Use `status` for a read-only check. Existing stopped/deallocated gateways are not started, rebuilt, or key-rotated by workload deployment. A successful start verifies Azure power, not Comin health.
+> **Add a new region:** Provide its registry entry, parameter files, and NixOS host configuration. A registry change also triggers image baking. If no blessed image is available in the new region yet, VM creation is explicitly deferred; successful image baking retries missing gateways only.
 > **Removing/renaming a host in an enabled region:** `deploy-workload` now also reconciles VM inventory inside `rg-<project>-compute-<location>` and deletes stale hosts (VM + OS disk + NIC + Public IP) that match the managed naming pattern (`vm-<project>-<gateway>-<location>`) but are no longer present in `infra/regions.json`.
 
 ## Configuration
@@ -238,7 +257,7 @@ The deployment flow has three steps run in order:
 Key parameters are split across three environment param files:
 
 - `infra/environments/plaz-global.bicepparam` — project-wide shared services (primary region, project name, region code for Key Vault name, CI SP object ID)
-- `infra/environments/plaz-landing-zone.bicepparam` — regional platform resources (location, project name, networking CIDRs). One file per region (also `plaz-sea-landing-zone.bicepparam`, …).
+- `infra/environments/plaz-landing-zone.bicepparam` — regional platform resources (location, project name, networking CIDRs). One file per enabled region.
 - `infra/environments/plaz-workload.bicepparam` — compute resources (VM size, admin username, SSH key, image ID, cloud-init data). One file per region.
 
 All files use `readEnvironmentVariable()` for secrets and dynamic values that are injected by the workflows at deploy time.

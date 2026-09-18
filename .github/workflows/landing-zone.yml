@@ -20,11 +20,10 @@
 #   - push / scheduled / default workflow_dispatch → deploys EVERY region
 #     whose `enabled: true` flag is set in infra/regions.json (matrix).
 #   - workflow_dispatch with `environment=<env>` → deploys only that env,
-#     regardless of its `enabled` flag (useful for one-off teardown/repair
-#     on a paused region).
+#     only while its enabled flag is true.
 #
 # To add or remove a region: edit infra/regions.json (no workflow change).
-# To pause a region: flip its `enabled` to false in infra/regions.json.
+# To pause a gateway without deleting resources: use gateway-power/deallocate.
 # (Note: regions.json changes no longer trigger this workflow — they trigger
 # deploy-workload.yml which handles landing-zone inline.)
 #
@@ -38,7 +37,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea) to deploy just that one — works even if the region is disabled.'
+        description: 'Enabled environment to deploy, or all. This updates networking/monitoring, not gateway power.'
         required: true
         default: 'all'
   push:
@@ -77,11 +76,14 @@ jobs:
           set -euxo pipefail
           az bicep build --file infra/landing-zone.bicep
 
+      - name: Validate region registry
+        run: python3 .github/scripts/gateway-power.py --validate-registry
+
   # ── Discover which regions to deploy ───────────────────────────────
   # Reads infra/regions.json and emits a JSON array suitable for use as a
   # matrix include. Push/auto runs deploy every enabled region in parallel.
   # workflow_dispatch with environment=<env> narrows to a single region
-  # (even if disabled — escape hatch for paused regions).
+  # (only enabled entries are eligible).
   discover:
     name: Discover regions
     needs: validate
@@ -113,16 +115,16 @@ jobs:
 
           # When REQUESTED_ENV is 'all' (push or default dispatch), select
           # every region with enabled=true. Otherwise select the single
-          # matching entry regardless of enabled state.
+          # enabled matching entry.
           if [ "$REQUESTED_ENV" = "all" ]; then
             MATRIX=$(jq -c '[.regions[] | select(.enabled == true) | {env, location, gateway, regionCode}]' infra/regions.json)
           else
-            MATRIX=$(jq -c --arg env "$REQUESTED_ENV" '[.regions[] | select(.env == $env) | {env, location, gateway, regionCode}]' infra/regions.json)
+            MATRIX=$(jq -c --arg env "$REQUESTED_ENV" '[.regions[] | select(.env == $env and .enabled == true) | {env, location, gateway, regionCode}]' infra/regions.json)
           fi
 
           COUNT=$(echo "$MATRIX" | jq 'length')
           if [ "$REQUESTED_ENV" != "all" ] && [ "$COUNT" -eq 0 ]; then
-            echo "::error::Requested environment '$REQUESTED_ENV' not found in infra/regions.json"
+            echo "::error::Requested environment '$REQUESTED_ENV' is not enabled in infra/regions.json"
             exit 1
           fi
           echo "Selected $COUNT region(s):"
@@ -144,7 +146,7 @@ jobs:
     # any in-flight deploy, but distinct envs (plaz, plaz-sea) run
     # in parallel.
     concurrency:
-      group: landing-zone-${{ matrix.env }}
+      group: region-${{ matrix.location }}
       cancel-in-progress: false
 
     steps:

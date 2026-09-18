@@ -1,0 +1,123 @@
+# Power control does not change regional membership. Disable/remove registry
+# entries only to request destructive regional cleanup, never to stop a VM.
+name: gateway-power
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Enabled environment from infra/regions.json (one region, never all)
+        type: string
+        default: plaz
+        required: true
+      action:
+        description: Observe, start, or deallocate the existing gateway
+        type: choice
+        options: [status, start, deallocate]
+        default: status
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_NAME: plaz
+
+jobs:
+  resolve:
+    name: Resolve enabled gateway on main
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      location: ${{ steps.target.outputs.location }}
+      environment: ${{ steps.target.outputs.environment }}
+      target: ${{ steps.target.outputs.target }}
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Validate registry and resolve one enabled gateway without Azure
+        id: target
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/gateway-power.py \
+            --environment "$TARGET_ENVIRONMENT" --resolve-target
+
+  power:
+    name: Control gateway power
+    needs: resolve
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: region-${{ needs.resolve.outputs.location }}
+      cancel-in-progress: false
+    env:
+      TARGET_ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
+      REQUESTED_ACTION: ${{ inputs.action }}
+    steps:
+      # A queued request must not use registry membership from before a removal.
+      - name: Checkout current main again under the regional lifecycle lock
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Revalidate enabled membership and exact locked target
+        env:
+          EXPECTED_TARGET: ${{ needs.resolve.outputs.target }}
+        run: |
+          set -euo pipefail
+          CURRENT_TARGET="$(python3 .github/scripts/gateway-power.py \
+            --environment "$TARGET_ENVIRONMENT" --resolve-target)"
+          if [ "$CURRENT_TARGET" != "$EXPECTED_TARGET" ]; then
+            echo "::error::Gateway identity changed while queued; dispatch again against current main."
+            exit 1
+          fi
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Observe or change gateway power and verify the result
+        id: power
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/gateway-power.py \
+            --environment "$TARGET_ENVIRONMENT" --action "$REQUESTED_ACTION" \
+            --subscription "$AZURE_SUBSCRIPTION_ID"
+
+      - name: Gateway power summary
+        if: always()
+        env:
+          INITIAL_STATE: ${{ steps.power.outputs.initial_state || 'not established' }}
+          RESULT_STATE: ${{ steps.power.outputs.power_state || 'not established' }}
+          OUTCOME: ${{ steps.power.outputs.outcome || 'not verified (see failed step)' }}
+        run: |
+          {
+            echo "## Gateway power"
+            printf -- '- Environment: %s\n' "$TARGET_ENVIRONMENT"
+            printf -- '- Requested action: %s\n' "$REQUESTED_ACTION"
+            printf -- '- Initial state: %s\n' "$INITIAL_STATE"
+            printf -- '- Verified result state: %s\n' "$RESULT_STATE"
+            printf -- '- Outcome: %s\n' "$OUTCOME"
+            echo
+            echo "Power operations never add/remove registry members or create/delete resources."
+            echo "Stopped VMs can still incur compute charges; deallocate releases their compute allocation."
+            echo "Disks and other retained resources can still incur charges while deallocated."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -8,13 +8,14 @@
 #   2. Push → deploy-workload handles both landing-zone and workload
 # Disabling/removing a region is also automatic on push: this workflow compares
 # the previous commit's enabled regions to the current config and tears down all
-# matching regional resource groups (rg-<project>-*-<location>) that are no
-# longer configured.
+# regional compute/network/monitoring groups that are no longer configured.
+# Power-off is separate: gateway-power deallocates without deleting resources,
+# and this workflow preserves existing stopped/deallocated gateways.
 #
 # Push trigger covers workload + landing-zone + regions.json paths only.
 # Global paths (gallery, KV) are excluded from push; instead the workflow_run
-# trigger fires automatically after global.yml succeeds, guaranteeing gallery
-# and Key Vault are ready before we try to use them.
+# trigger fires after global.yml succeeds. A successful image-bake also retries
+# missing gateways once a region-ready blessed image is available.
 #
 # Agenix host key delivered via cloud-init customData + run-command fallback:
 #   CI generates ssh_host_ed25519_key → private key to Key Vault →
@@ -36,14 +37,17 @@ on:
       - 'infra/environments/*-landing-zone.bicepparam'
       - 'infra/regions.json'
       - '.github/workflows/deploy-workload.yml'
+      - '.github/scripts/gateway-power.py'
+      - '.github/scripts/remove-region-replicas.py'
+      - '.github/scripts/select-region-image.py'
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to deploy. Leave as "all" to deploy every enabled region in infra/regions.json. Specify a single env (e.g. plaz, plaz-sea) to deploy just that one — works even if the region is disabled.'
+        description: 'Enabled environment to deploy, or all. Existing stopped/deallocated gateways are preserved; start them explicitly with gateway-power first.'
         required: true
         default: 'all'
   workflow_run:
-    workflows: ["global"]
+    workflows: ["global", "image-bake"]
     types: [completed]
     branches: [main]
 
@@ -61,38 +65,62 @@ env:
 
 # Workflow-level concurrency is intentionally absent. Per-environment
 # serialisation is enforced at the deploy-job level via a matrix-aware
-# `concurrency.group: workload-${{ matrix.env }}` (see below). This lets
+# `concurrency.group: region-${{ matrix.location }}` (see below). This lets
 # distinct regions queue independently while still preventing two runs
 # from racing on the same region's host-key rotation + secrets push.
 
 jobs:
   validate:
     name: Validate Bicep
+    if: >-
+      (github.event_name != 'workflow_run' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.id == github.repository_id)
     runs-on: ubuntu-latest
+    outputs:
+      current: ${{ steps.source.outputs.current }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
 
+      - name: Ignore superseded upstream completions
+        if: github.event_name == 'workflow_run'
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CURRENT_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          if [ "$SOURCE_SHA" = "$CURRENT_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream used a superseded main commit; skipping to avoid restoring retired regions."
+          fi
+
       - name: Validate workload template
+        if: steps.source.outputs.current != 'false'
         run: |
           set -euxo pipefail
           az bicep build --file infra/workload.bicep
+
+      - name: Validate region registry
+        if: steps.source.outputs.current != 'false'
+        run: python3 .github/scripts/gateway-power.py --validate-registry
 
   # ── Discover which regions to deploy ───────────────────────────────
   # Reads infra/regions.json and emits a JSON array suitable for use as a
   # matrix include. Push/auto runs deploy every enabled region. A
   # workflow_dispatch with environment=<env> narrows to a single region
-  # (even if disabled — escape hatch for paused regions).
+  # (only enabled entries are eligible).
   discover:
     name: Discover regions
     needs: validate
-    # Skip on failed upstream workflow_run; allow push, workflow_dispatch,
-    # and successful workflow_run (global) to trigger discovery.
-    if: |
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    if: needs.validate.outputs.current != 'false'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.regions.outputs.matrix }}
@@ -124,12 +152,12 @@ jobs:
           if [ "$REQUESTED_ENV" = "all" ]; then
             MATRIX=$(jq -c '[.regions[] | select(.enabled == true) | {env, location, gateway, regionCode}]' infra/regions.json)
           else
-            MATRIX=$(jq -c --arg env "$REQUESTED_ENV" '[.regions[] | select(.env == $env) | {env, location, gateway, regionCode}]' infra/regions.json)
+            MATRIX=$(jq -c --arg env "$REQUESTED_ENV" '[.regions[] | select(.env == $env and .enabled == true) | {env, location, gateway, regionCode}]' infra/regions.json)
           fi
 
           COUNT=$(echo "$MATRIX" | jq 'length')
           if [ "$REQUESTED_ENV" != "all" ] && [ "$COUNT" -eq 0 ]; then
-            echo "::error::Requested environment '$REQUESTED_ENV' not found in infra/regions.json"
+            echo "::error::Requested environment '$REQUESTED_ENV' is not enabled in infra/regions.json"
             exit 1
           fi
           echo "Selected $COUNT region(s):"
@@ -144,6 +172,7 @@ jobs:
   discover-stale-regions:
     name: Discover stale regions
     needs: validate
+    if: needs.validate.outputs.current != 'false'
     runs-on: ubuntu-latest
     outputs:
       locations: ${{ steps.stale.outputs.locations }}
@@ -197,6 +226,15 @@ jobs:
             <(printf '%s\n' "$PREV_ENABLED" | awk 'NF' | sort -u) \
             <(printf '%s\n' "$CURR_ENABLED" | awk 'NF' | sort -u))
 
+          if git cat-file -e "${BEFORE_SHA}:infra/regions.json" 2>/dev/null; then
+            PREV_PRIMARY=$(git show "${BEFORE_SHA}:infra/regions.json" \
+              | jq -r '.regions[] | select(.primary == true) | .location')
+            if [ -n "$PREV_PRIMARY" ] && printf '%s\n' "$PREVIOUSLY_ENABLED_NOW_DISABLED" | grep -Fxq "$PREV_PRIMARY"; then
+              echo "::error::Removing the primary region requires a separate shared-services migration."
+              exit 1
+            fi
+          fi
+
           # Fail fast (rather than teardown) if any currently-enabled region is
           # missing its required bicepparam files. A missing file is far more
           # likely to be a transient/accidental partial commit than an intent
@@ -239,7 +277,7 @@ jobs:
       matrix:
         location: ${{ fromJSON(needs.discover-stale-regions.outputs.locations) }}
     concurrency:
-      group: cleanup-${{ matrix.location }}
+      group: region-${{ matrix.location }}
       cancel-in-progress: false
     env:
       CLEANUP_LOCATION: ${{ matrix.location }}
@@ -257,9 +295,16 @@ jobs:
           PROJECT="${{ env.PROJECT_NAME }}"
           LOCATION="${CLEANUP_LOCATION}"
 
-          mapfile -t RESOURCE_GROUPS < <(az group list \
-            --query "[?starts_with(name, 'rg-${PROJECT}-') && ends_with(name, '-${LOCATION}')].name" \
-            -o tsv)
+          RESOURCE_GROUPS=()
+          for kind in compute network monitoring; do
+            rg="rg-${PROJECT}-${kind}-${LOCATION}"
+            EXISTS=$(az group exists --name "$rg" -o tsv)
+            case "$EXISTS" in
+              true) RESOURCE_GROUPS+=("$rg") ;;
+              false) ;;
+              *) echo "::error::Unexpected existence result for $rg"; exit 1 ;;
+            esac
+          done
 
           if [ "${#RESOURCE_GROUPS[@]}" -eq 0 ]; then
             echo "No resource groups found for location ${LOCATION}; nothing to delete."
@@ -305,9 +350,46 @@ jobs:
 
           echo "✅ Regional cleanup completed for $LOCATION."
 
+  cleanup-gallery-replicas:
+    name: Remove retired regional gallery replicas
+    needs: [discover-stale-regions, cleanup-disabled-regions]
+    if: needs.discover-stale-regions.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    concurrency:
+      group: image-bake
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Remove replicas without deleting image versions
+        env:
+          REMOVED_LOCATIONS: ${{ needs.discover-stale-regions.outputs.locations }}
+        run: |
+          set -euo pipefail
+          GLOBAL="global-${PROJECT_NAME}"
+          GALLERY_RG=$(az deployment sub show --name "$GLOBAL" --query properties.outputs.galleryResourceGroup.value -o tsv)
+          GALLERY_NAME=$(az deployment sub show --name "$GLOBAL" --query properties.outputs.galleryName.value -o tsv)
+          IMAGE_DEF=$(az deployment sub show --name "$GLOBAL" --query properties.outputs.imageDefinitionName.value -o tsv)
+          python3 .github/scripts/remove-region-replicas.py \
+            --resource-group "$GALLERY_RG" --gallery-name "$GALLERY_NAME" \
+            --image-definition "$IMAGE_DEF" --removed-locations "$REMOVED_LOCATIONS"
+
   discover-stale-hosts:
     name: Discover stale hosts
     needs: validate
+    if: needs.validate.outputs.current != 'false'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.hosts.outputs.matrix }}
@@ -357,7 +439,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.discover-stale-hosts.outputs.matrix) }}
     concurrency:
-      group: cleanup-hosts-${{ matrix.location }}
+      group: region-${{ matrix.location }}
       cancel-in-progress: false
     env:
       CLEANUP_LOCATION: ${{ matrix.location }}
@@ -484,7 +566,7 @@ jobs:
     # Per-environment queue: same env serialises (no cancel-in-progress —
     # cancelling mid-flight would leave repo / Key Vault / VM inconsistent).
     concurrency:
-      group: workload-${{ matrix.env }}
+      group: region-${{ matrix.location }}
       cancel-in-progress: false
     env:
       # Matrix values exposed as conventional env vars for downstream steps
@@ -524,12 +606,27 @@ jobs:
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Inspect gateway power state without starting it
+        id: power-state
+        run: python3 .github/scripts/gateway-power.py --environment "$ENV_NAME" --action status
+
+      - name: Preserve powered-off gateway
+        if: steps.power-state.outputs.power_state == 'stopped' || steps.power-state.outputs.power_state == 'deallocated'
+        run: echo "Gateway is powered off. Skipping infrastructure/image reconciliation and key rotation; use gateway-power to start it explicitly."
+
+      - name: Select deployment policy
+        id: policy
+        env:
+          RECONCILE: ${{ steps.power-state.outputs.power_state == 'missing' || (steps.power-state.outputs.power_state == 'running' && github.event.workflow_run.name != 'image-bake') }}
+        run: echo "reconcile=$RECONCILE" >> "$GITHUB_OUTPUT"
+
       # ── Ensure landing-zone is deployed for this region ───────────────
       # Checks if the landing-zone subscription deployment already exists and
       # has outputs. If not, deploys it inline so that enabling a new region
       # (enabled=true in infra/regions.json) is fully self-contained — no
       # separate landing-zone workflow run is required.
       - name: Ensure landing-zone deployed
+        if: steps.policy.outputs.reconcile == 'true'
         run: |
           set -euo pipefail
           # Check if landing-zone deployment is in a succeeded state with all
@@ -571,6 +668,7 @@ jobs:
           fi
 
       - name: Resolve landing-zone outputs
+        if: steps.policy.outputs.reconcile == 'true'
         run: |
           set -euo pipefail
           SUBNET_ID=$(az deployment sub show \
@@ -593,6 +691,7 @@ jobs:
       # ── Resolve newest blessed gallery image version ───────────────────
       - name: Resolve blessed image version
         id: resolve-image
+        if: steps.policy.outputs.reconcile == 'true'
         run: |
           set -euo pipefail
 
@@ -606,31 +705,24 @@ jobs:
             --name "${GLOBAL_DEPLOYMENT}" \
             --query 'properties.outputs.imageDefinitionName.value' -o tsv)
 
-          # List all versions, filter to blessed=true, pick the newest by publishedDate
-          BLESSED_ID=$(az sig image-version list \
+          az sig image-version list \
             --resource-group "$GALLERY_RG" \
             --gallery-name "$GALLERY_NAME" \
             --gallery-image-definition "$IMAGE_DEF" \
-            --query "[?tags.blessed=='true'] | sort_by(@, &publishingProfile.publishedDate) | [-1].id" \
-            -o tsv)
+            -o json > "$RUNNER_TEMP/gallery-versions.json"
+          python3 .github/scripts/select-region-image.py \
+            --location "$DEPLOYMENT_LOCATION" --versions "$RUNNER_TEMP/gallery-versions.json"
 
-          if [ -z "$BLESSED_ID" ]; then
-            echo "::error::No blessed gallery image version found. Run image-bake workflow first."
-            exit 1
-          fi
-
-          BLESSED_VERSION=$(az sig image-version show \
-            --ids "$BLESSED_ID" \
-            --query name -o tsv)
-
-          echo "Blessed image version: $BLESSED_VERSION"
-          echo "Blessed image ID:      $BLESSED_ID"
-          echo "NIXOS_IMAGE_ID=$BLESSED_ID"       >> "$GITHUB_ENV"
-          echo "BLESSED_VERSION=$BLESSED_VERSION"  >> "$GITHUB_ENV"
+      - name: Await a region-ready blessed image
+        if: steps.policy.outputs.reconcile == 'true' && steps.resolve-image.outputs.image_ready != 'true'
+        run: |
+          echo "No blessed image is replicated to this region yet; VM creation is deferred."
+          echo "A successful image-bake run retries missing gateways automatically. Run image-bake manually if no bake is in progress."
 
       # ── Check VM state ────────────────────────────────────────────────
       - name: Check VM state
         id: vm-state
+        if: steps.policy.outputs.reconcile == 'true' && steps.resolve-image.outputs.image_ready == 'true'
         run: |
           set -euo pipefail
 
@@ -743,9 +835,11 @@ jobs:
             exit 1
           fi
           echo "Runner egress IP: $RUNNER_IP"
-          echo "KV_NAME=$KV_NAME"   >> "$GITHUB_ENV"
-          echo "KV_RG=$KV_RG"       >> "$GITHUB_ENV"
-          echo "RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+          {
+            echo "KV_NAME=$KV_NAME"
+            echo "KV_RG=$KV_RG"
+            echo "RUNNER_IP=$RUNNER_IP"
+          } >> "$GITHUB_ENV"
 
           az keyvault network-rule add \
             --name "$KV_NAME" --resource-group "$KV_RG" \
@@ -899,7 +993,7 @@ jobs:
           # and the workflow file fails to parse). The tab is then stripped
           # by `<<-CLOUDINIT` (POSIX `<<-` only strips leading TABS, not
           # spaces) so the rendered cloud-init document starts at column 0.
-          PRIVKEY_INDENTED=$(echo "$PRIVKEY" | sed 's/^/      /')
+          PRIVKEY_INDENTED="      ${PRIVKEY//$'\n'/$'\n      '}"
           CLOUD_INIT=$(cat <<-CLOUDINIT
           	#cloud-config
           	write_files:
@@ -960,6 +1054,7 @@ jobs:
 
       # ── Deploy Infrastructure ─────────────────────────────────────────
       - name: Deploy Infrastructure
+        if: steps.policy.outputs.reconcile == 'true' && steps.resolve-image.outputs.image_ready == 'true'
         env:
           ADMIN_SSH_PUBLIC_KEY: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
         run: |
@@ -981,6 +1076,7 @@ jobs:
           fi
 
       - name: Show Outputs
+        if: steps.policy.outputs.reconcile == 'true' && steps.resolve-image.outputs.image_ready == 'true'
         run: |
           set -euxo pipefail
           az deployment sub show \
@@ -1077,6 +1173,10 @@ jobs:
             echo "| Environment | \`$ENV_NAME\` |"
             echo "| Location | \`${{ matrix.location }}\` |"
             echo "| Gateway | \`${{ matrix.gateway }}\` |"
+            echo "| Initial power state | \`${{ steps.power-state.outputs.power_state || 'unverified' }}\` |"
+            echo "| Powered-off gateway | Preserved; no automatic start/rebuild |"
+            echo "| Region-ready image | \`${{ steps.resolve-image.outputs.image_ready || 'not checked' }}\` |"
+            echo "| Image-bake follow-up | Creates missing gateways only; never rebuilds an existing VM |"
             echo "| Blessed image | \`${BLESSED_VERSION:-n/a}\` |"
             echo "| Image changed | \`${{ steps.vm-state.outputs.image_changed }}\` |"
             echo "| Host key generated | \`${{ steps.hostkey.outputs.hostkey_generated || 'false' }}\` |"

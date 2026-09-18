@@ -65,8 +65,15 @@ The `comin-status` workflow provides fallback visibility:
 - **Automatic**: runs daily at 06:00 UTC.
 - **Manual**: trigger via `workflow_dispatch`.
 
-It uses `az vm run-command invoke` to check if the Comin systemd service
-is active on each VM.
+It uses read-only instance-view queries before inspecting Comin on running VMs
+through `az vm run-command invoke`. Each gateway receives an explicit Actions
+summary. Stopped, deallocated, or absent gateways are **not checked**; a green
+workflow with skipped gateways does not establish fleet health. Monitoring
+never starts a gateway.
+
+Service activity alone does not prove authenticated GitOps is working.
+Running-VM reports distinguish current fetch/deployment evidence from a merely
+active service, and report authentication or observation failures explicitly.
 
 ## Secret Management with Agenix
 
@@ -131,16 +138,50 @@ git add secrets/ && git commit -m "chore: rotate secret" && git push
    - **Contents** — Read & Write
    - **Pull requests** — Read & Write
    - **Commit statuses** — Read & Write
+   - **Issues** — Read & Write (for failure reporting)
 2. Update the `GH_PAT` repository secret:
    ```bash
-   gh secret set GH_PAT --body "<new-token>"
+   gh secret set GH_PAT --repo poomnupong/poomlab-azure
    ```
-3. Update the agenix-encrypted token:
+   Enter the token at the hidden prompt, not as a command argument.
+3. Separately update the agenix-encrypted token using an authorized identity:
    ```bash
    cd nixos && agenix -e secrets/comin-github-token.age
    # Paste the new PAT, save
    ```
-   Commit, push, merge. Comin picks it up automatically.
+   Preserve the existing recipients. Commit the encrypted change through a
+   reviewed PR. Running VMs can fetch it automatically only while their current
+   token still authenticates. Do not start stopped gateways.
+
+### Recovering after token expiration
+
+Updating `GH_PAT` fixes CI's credential, not the encrypted file or a VM's
+in-memory/on-disk credential. An expired token can prevent Comin from fetching
+the commit containing its own replacement. Do not treat a green CI smoke run
+as proof that existing gateways have recovered.
+
+1. Refresh the Actions secret and separately prepare/review the encrypted
+   `comin-github-token.age` update for the existing recipients.
+2. Keep stopped gateways stopped until their owner approves a maintenance
+   window and an out-of-band recovery operation.
+3. For an approved running gateway, use an authenticated administrative channel
+   (the existing Azure Run Command mechanism or approved SSH access) to install
+   a temporary replacement at Comin's **effective** access-token path. Inspect
+   the active service/configuration first: a baked-image bootstrap uses
+   `/etc/comin-bootstrap-token`, while configured hosts normally use
+   `/run/agenix/comin-github-token`.
+4. Deliver credentials using the approved secret-management channel, without
+   command-line arguments, diagnostic tracing, logs, or unencrypted artifacts.
+   Ensure root-only ownership/mode, then restart Comin after approval. Do not
+   assume changing a file reconfigures a running process.
+5. Verify an authenticated fetch and successful application of the reviewed
+   encrypted-token commit, and confirm that agenix manages the persisted
+   replacement. Remove any temporary bootstrap copy only after the effective
+   token path has transitioned and recovery is verified.
+
+This is an operator-run break-glass procedure, not part of daily health checks.
+If the approved recovery channel or required identity is unavailable, stop and
+escalate rather than starting/rebuilding VMs or exposing the token.
 
 ### Rotating the VM's Age Key (Rare)
 
@@ -188,7 +229,8 @@ and creates an issue with a checklist for reviewing all secrets.
 | `image-bake` | Saturday 14:00 UTC + `nixos/**`/`image-bake/**` changes + manual | Builds baked NixOS image, Tier 1 + Tier 2 smoke, tags `blessed=true` |
 | `global` | Manual + global Bicep path changes | Deploys project-wide shared services (Compute Gallery, Key Vault) once for the whole project, region-pinned to the primary region |
 | `landing-zone` | Manual + regional Bicep path changes | Deploys regional platform resources (monitoring, networking) — one deployment per region |
-| `deploy-workload` | Push to `main` on `infra/**` + manual | Deploys per-region gateway VMs (gw1-scus/gw1-sea) from blessed image; injects host key via cloud-init; no SSH bootstrap |
+| `deploy-workload` | Infrastructure changes on `main` + manual + upstream completion | Deploys enabled gateways from region-ready blessed images; preserves stopped/deallocated gateways. Image-bake completion retries missing gateways only. |
+| `gateway-power` | Manual on `main` | Explicit per-environment status/start/deallocate, independent of region membership. Starting verifies Azure power only; run `comin-status` separately. |
 | `comin-status` | Daily + manual | Health check — queries Comin status on all VMs |
 | `ci-pr` | Pull request → `main` | Validation gate (Bicep lint + NixOS flake check) |
 | `update-flake-lock` | Weekly Monday 08:00 UTC + manual | Updates `nixos/flake.lock` and `image-bake/flake.lock`, opens PR |
@@ -217,6 +259,7 @@ and creates an issue with a checklist for reviewing all secrets.
 - **Tier 2 smoke test runner** requires `Contributor` on the subscription
   (creates a real Azure VM in a sandbox RG `rg-plaz-smoke-<run_id>`).
 
-- **Garbage collection:** keep last 4 blessed gallery image versions; older
-  un-blessed versions deleted eagerly after Tier 2 smoke. See
+- **Gallery retention:** keeping the last 4 blessed versions is a proposed
+  policy, not implemented automatic deletion. Cleanup currently targets
+  temporary staging/smoke resources. See
   [`docs/image-bake.md`](image-bake.md) for details.

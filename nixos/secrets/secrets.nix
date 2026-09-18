@@ -8,9 +8,9 @@
 let
   # ── VM host keys ────────────────────────────────────────────────
   gw1-scus = "age1tf75lymgsqgk5ad8wtwengwz93w96858fm3rtg8udk36nu8dmgsspqejez";
-  gw1-sea = "age1rtm853kvt5ameul2zawx2cv0eh348vq9wrmeu38j2n4v0k63258qks88gz";
 
-  allSystems = [ gw1-scus gw1-sea ];
+  # Existing ciphertext needs separate re-encryption to revoke retired recipients.
+  allSystems = [ gw1-scus ];
 in
 {
   "comin-github-token.age".publicKeys = allSystems;

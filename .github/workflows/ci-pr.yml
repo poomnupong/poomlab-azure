@@ -25,6 +25,39 @@ env:
   PROJECT_NAME: plaz
 
 jobs:
+  validate-automation:
+    name: Validate CI automation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test workflow helpers and guards
+        run: python3 -B -m unittest discover -s .github/tests -v
+
+      - name: Validate region registry
+        run: python3 .github/scripts/gateway-power.py --validate-registry
+
+      - name: Lint remote observation script
+        run: shellcheck .github/scripts/comin-observe.sh
+
+      - name: Lint automation workflows
+        uses: docker://rhysd/actionlint@sha256:a0383f60d92601e2694e24b24d37df7b6a40bed7cedbc447611c50009bf02d94 # 1.7.9
+        with:
+          args: >-
+            .github/workflows/ci-pr.yml
+            .github/workflows/update-flake-lock.yml
+            .github/workflows/image-bake.yml
+            .github/workflows/comin-status.yml
+            .github/workflows/copilot-auto-retry.yml
+            .github/workflows/gateway-power.yml
+            .github/workflows/deploy-workload.yml
+            .github/workflows/landing-zone.yml
+
   # ------------------------------------------------------------------
   # Detect which paths changed
   # ------------------------------------------------------------------
