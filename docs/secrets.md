@@ -81,13 +81,14 @@ gh secret set ADMIN_SSH_PUBLIC_KEY --repo poomnupong/poomlab-azure --body "$(cat
 
 ---
 
-## GH_PAT — Personal Access Token (required by `update-flake-lock` and `deploy-workload`)
+## GH_PAT — Personal Access Token
 
 ### What it is
 
 `GH_PAT` is a GitHub **Personal Access Token** used by:
 
 - **`update-flake-lock`** — so auto-generated PRs trigger `ci-pr.yml`
+- **`image-bake`** — authenticated Comin bootstrap in the disposable Azure smoke VM
 - **`deploy-workload`** — to commit updated agenix secrets (`secrets.nix` + `.age`
   files) after re-encrypting for the new host key
 
@@ -112,7 +113,7 @@ user action and fires all the expected workflow triggers, including `ci-pr.yml`.
 
 | Token type | Required scope/permission |
 |---|---|
-| Fine-grained PAT (**recommended**) | **Contents** — Read & Write; **Pull requests** — Read & Write; **Commit statuses** — Read & Write (scoped to this repository only) |
+| Fine-grained PAT (**recommended**) | **Contents**, **Pull requests**, **Commit statuses** — Read & Write; **Issues** — Read & Write for Comin failure reporting (scoped to this repository only) |
 | Classic PAT | `repo` (full repository access — grants broader access than needed) |
 
 > **Note:** The PAT needs **Commit statuses** R/W permission so that
@@ -136,6 +137,7 @@ repository and limited to the exact capabilities the workflow needs.
      - **Contents** — Read and Write
      - **Pull requests** — Read and Write
      - **Commit statuses** — Read and Write
+     - **Issues** — Read and Write (for Comin failure reporting)
 3. Click **Generate token** and copy the value immediately (it won't be shown again).
 4. In **this repository** go to **Settings → Secrets and variables → Actions**.
 5. Click **New repository secret**.
@@ -152,22 +154,57 @@ fine-grained token is preferred for tighter security.
 Using the GitHub CLI:
 
 ```bash
-gh secret set GH_PAT --repo poomnupong/poomlab-azure --body "<paste token here>"
+gh secret set GH_PAT --repo poomnupong/poomlab-azure
 ```
+
+Enter the token at the CLI's hidden prompt, or edit the existing repository
+secret in GitHub's UI. Do not put it in command arguments, shell history,
+source files, issue bodies, or chat.
 
 ### Token rotation
 
 The `rotate-secrets-reminder` workflow creates a monthly issue reminding you
 to check token expiry. When the PAT expires:
 
-1. The `update-flake-lock` workflow will fail with `401 Unauthorized`.
-2. Comin on VMs will fail to pull repo changes.
+1. The updater's credential preflight rejects the token before flake updates.
+2. Image publication and smoke provisioning fail their credential preflight.
+3. Comin using the expired encrypted token cannot fetch configuration updates.
 
 To rotate:
 1. Generate a new PAT following the steps above.
 2. Update `GH_PAT` repository secret.
-3. Update `nixos/secrets/comin-github-token.age` with `agenix -e`.
-4. Commit and push — Comin picks up the new token automatically.
+3. Separately update `nixos/secrets/comin-github-token.age` through the authorized
+   agenix rotation process, preserving its intended recipients.
+4. Commit the encrypted change through a reviewed PR. If the old token still
+   works, running VMs can fetch and apply its replacement normally.
+5. If the old token has already expired, repository changes alone cannot repair
+   a VM that can no longer fetch the repository. Follow the
+   [expired-token recovery procedure](comin-deployment.md#recovering-after-token-expiration)
+   with explicit operator approval. Do not start stopped gateways for rotation.
+
+The Actions secret and encrypted fleet token are separate copies. Successful
+updater and disposable-smoke runs verify the Actions copy, not token rotation
+on the existing gateways. GitHub secret metadata confirms when a value was
+saved; it does not reveal the value, expiration, or effective permissions.
+
+### Credential preflight
+
+`.github/scripts/check-github-auth.py` reads `GH_TOKEN` (set to `secrets.GH_PAT`),
+`GITHUB_REPOSITORY`, and `GITHUB_SHA`. It performs an authenticated read of
+`nixos/flake.nix` at that revision without logging the token or response body.
+Missing/invalid credentials, denied access, missing files, rate limits, and
+transport errors are reported separately; a network error is not diagnosed
+as token expiration.
+
+The updater initially checks out using the built-in job token with credential
+persistence disabled, then checks the PAT before updating inputs. PR creation
+still uses the PAT so PR checks trigger normally. Image publication and Tier 2
+each check their effective `production`-environment credential before Azure
+login/provisioning. PR-only builds do not require the PAT.
+
+This read-only preflight does not prove write permissions. Verify those by
+running the updater and inspecting the updated PR's fresh checks. Keep Azure
+smoke verification, PR merging, and fleet recovery as separate approved steps.
 
 ---
 
@@ -232,5 +269,5 @@ Secrets Officer** (data plane); both are assigned by `infra/modules/keyvault/mai
 | `AZURE_SUBSCRIPTION_ID`  | all Azure workflows                              | Created by bootstrap script        |
 | `CI_SP_OBJECT_ID`        | `global`                                         | Object ID for Key Vault Secrets Officer + Contributor roles; get via `az ad sp show` |
 | `ADMIN_SSH_PUBLIC_KEY`   | `deploy-workload`, `ci-pr`                       | Azure VM initial provisioning; keep in sync with `nixos/keys/admin.pub` |
-| `GH_PAT`                 | `update-flake-lock`, `deploy-workload`           | Fine-grained PAT (Contents + Pull requests + Commit statuses, R/W) |
+| `GH_PAT`                 | `update-flake-lock`, `image-bake`, `deploy-workload` | Fine-grained PAT; see the permission table above. The fleet's encrypted copy is rotated separately. |
 | `MIN_CONSUME_SUBSCRIPTION_IDS` *(optional)* | `min-consume`, `min-consume-teardown` | Comma/newline-separated fallback list when `az account list` discovery is blocked by scope/policy. May be set as either a repository **variable** (preferred — subscription IDs are not sensitive) or a **secret**; workflows read both (`vars.*` checked first, then `secrets.*`). |

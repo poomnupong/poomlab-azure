@@ -111,66 +111,14 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Check ${{ matrix.gateway }} is running
-        id: ensure-vm
-        run: |
-          set -euo pipefail
-          RG="rg-${{ env.PROJECT_NAME }}-compute-${{ matrix.location }}"
-          VM_NAME="vm-${{ env.PROJECT_NAME }}-${{ matrix.gateway }}-${{ matrix.location }}"
-
-          VM_VIEW_OUTPUT=""
-          VM_VIEW_EXIT=0
-          VM_VIEW_OUTPUT=$(az vm get-instance-view \
-            --resource-group "$RG" \
-            --name "$VM_NAME" \
-            --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" \
-            --output tsv 2>&1) || VM_VIEW_EXIT=$?
-
-          if [ $VM_VIEW_EXIT -ne 0 ]; then
-            if echo "$VM_VIEW_OUTPUT" | grep -qi "could not be found\|ResourceNotFound\|ResourceGroupNotFound"; then
-              echo "::warning::VM or resource group does not exist yet. Run deploy-workload first."
-              echo "vm_ready=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            else
-              echo "::error::Unexpected error querying VM: $VM_VIEW_OUTPUT"
-              exit 1
-            fi
-          fi
-
-          POWER_STATE="$VM_VIEW_OUTPUT"
-          echo "Current power state: $POWER_STATE"
-          if [ "$POWER_STATE" != "PowerState/running" ]; then
-            echo "::warning::VM is not running (state: $POWER_STATE). Skipping status check."
-            echo "vm_ready=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "vm_ready=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Query Comin status on ${{ matrix.gateway }}
-        if: steps['ensure-vm'].outputs.vm_ready != 'false'
+        env:
+          RG: rg-${{ env.PROJECT_NAME }}-compute-${{ matrix.location }}
+          VM_NAME: vm-${{ env.PROJECT_NAME }}-${{ matrix.gateway }}-${{ matrix.location }}
         run: |
           set -euo pipefail
-
-          OUTPUT_FILE=$(mktemp)
-          .github/scripts/az-run-command.sh \
-            "rg-${{ env.PROJECT_NAME }}-compute-${{ matrix.location }}" \
-            "vm-${{ env.PROJECT_NAME }}-${{ matrix.gateway }}-${{ matrix.location }}" \
-            $'set -eo pipefail\nset +u; source /etc/profile; set -u\necho "=== Comin service status ==="\nsystemctl is-active comin || echo "comin service is NOT active"\necho ""\necho "=== Comin journal (last 20 lines) ==="\njournalctl -u comin --no-pager -n 20 2>/dev/null || echo "No comin journal entries"\necho ""\necho "=== Current NixOS generation ==="\nreadlink /nix/var/nix/profiles/system || echo "unknown"\necho ""\necho "STATUS_CHECK_COMPLETE"' \
-            > "$OUTPUT_FILE"
-
-          STDOUT=$(cat "$OUTPUT_FILE")
-          rm -f "$OUTPUT_FILE"
-          echo "--- Comin Status Report ---"
-          echo "$STDOUT"
-
-          if ! echo "$STDOUT" | grep -q "STATUS_CHECK_COMPLETE"; then
-            echo "::error::Status check did not complete successfully."
-            exit 1
-          fi
-
-          # Check if comin is active
-          if echo "$STDOUT" | grep -q "comin service is NOT active"; then
-            echo "::warning::Comin service is not active on ${{ matrix.gateway }}. Check deploy-workload logs."
-          else
-            echo "✅ Comin is active and healthy on ${{ matrix.gateway }}."
-          fi
+          # Read-only: stopped/absent gateways remain NOT CHECKED, never healthy.
+          # Running gateways require current fetch AND successful activation
+          # evidence; an active systemd unit or old profile alone is insufficient.
+          python3 .github/scripts/comin-status.py \
+            --resource-group "$RG" --vm-name "$VM_NAME" --timeout-seconds 240

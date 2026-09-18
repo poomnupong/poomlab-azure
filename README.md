@@ -90,19 +90,19 @@ Each host under `nixos/hosts/<vmname>/` is self-contained — `default.nix` impo
 
 | Workflow | File | Trigger | Purpose |
 |---|---|---|---|
-| `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | Validation only. Bicep lint + NixOS flake check. |
+| `ci-pr` | `.github/workflows/ci-pr.yml` | Pull request → `main` | Validation only. Bicep lint, NixOS flake check, and CI helper/guard regression tests and workflow lint. |
 | `image-bake` | `.github/workflows/image-bake.yml` | Saturday 14:00 UTC + `nixos/**`/`image-bake/**` changes + manual | Builds baked NixOS image with Comin pre-installed. Tier 1 QEMU smoke + Tier 2 real-Azure smoke. Tags `blessed=true` on success. |
 | `global` | `.github/workflows/global.yml` | Manual + global Bicep path changes | Deploys project-wide shared services (Compute Gallery, Key Vault) once for the whole project, region-pinned to the primary region. |
 | `landing-zone` | `.github/workflows/landing-zone.yml` | Manual + landing-zone Bicep path changes | Deploys regional platform resources (monitoring, VNET/NSGs). Standalone use only — deploy-workload handles this automatically when enabling a new region. |
 | `deploy-workload` | `.github/workflows/deploy-workload.yml` | Push to `main` on `infra/workload.bicep`, `infra/landing-zone.bicep`, `infra/regions.json` + manual + after `global` completes | Deploys all enabled regions. Auto-deploys landing-zone inline for new regions. Resolves newest `blessed=true` image. Option A agenix key delivery via cloud-init. No SSH bootstrap. |
-| `comin-status` | `.github/workflows/comin-status.yml` | Daily + manual | Health check — Comin status on all VMs. |
+| `comin-status` | `.github/workflows/comin-status.yml` | Daily + manual | Reports current Comin health on running VMs; stopped/absent gateways are explicitly not checked and are never started. |
 | `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly Monday 08:00 UTC + manual | Updates `nixos/flake.lock` and `image-bake/flake.lock`, opens PR. |
 | `rotate-secrets-reminder` | `.github/workflows/rotate-secrets-reminder.yml` | Monthly 1st + manual | Creates GitHub issue with secrets rotation checklist. |
 | `destroy-infra` | `.github/workflows/destroy-infra.yml` | Manual only | Deletes all Azure resource groups. |
 | `min-consume` | `.github/workflows/min-consume.yml` | Weekly Sunday 00:00 UTC + manual | Deploys a minimal keep-alive footprint per subscription in West US 3 (`rg-min-consume-westus3`, VNET/subnet, NSG, Standard_B4as_v2 VM on latest Ubuntu LTS non-Pro x86_64 image). Optional SSH rule is controlled by `MIN_CONSUME_SSH_SOURCE`. |
 | `min-consume-teardown` | `.github/workflows/min-consume-teardown.yml` | Weekly Tuesday 00:00 UTC + manual | Deletes `rg-min-consume-westus3` in every targeted subscription (48 hours after `min-consume`). |
 
-**Key principle:** `ci-pr` acts as the gate — it runs on every PR and must pass before merging. After merge to `main`, Comin (running on each VM) polls this repo every 60 seconds and applies the new config automatically. No SSH bootstrap is ever needed — Comin is baked into the gallery image and starts on first boot.
+**Key principle:** `ci-pr` runs on every PR; configure its checks as required in the main-branch ruleset to enforce validation before merging. After merge to `main`, Comin on running VMs polls this repo every 60 seconds and applies new configuration, provided its credential remains valid. Comin is baked into the gallery image and starts on first boot.
 
 ### Min-consume subscription keep-alive
 
@@ -118,7 +118,25 @@ See [`docs/min-consume.md`](docs/min-consume.md) for full details.
 
 ## Branch Protection
 
-Branch protection on `main` is strongly recommended to ensure all changes pass validation before reaching production. See [`docs/branch_protection.md`](docs/branch_protection.md) for a complete setup guide, including the required status check names and a GitHub CLI command for scripted configuration.
+Branch protection on `main` is strongly recommended to ensure all changes pass validation before reaching production. See [`docs/branch_protection.md`](docs/branch_protection.md) for the existing ruleset, proposed required checks, and read-only inspection commands.
+
+The existing default-branch ruleset must explicitly require status checks;
+having a PR rule alone does not enforce CI. Changes to its rules or bypass
+actors require administrator approval.
+
+### CI automation checks
+
+Run helper and event-guard regression tests without credentials or Azure access:
+
+```bash
+python3 -B -m unittest discover -s .github/tests -v
+```
+
+`Validate CI automation` also runs Actionlint on the affected automation
+workflows. PAT preflights distinguish credential rejection from transport
+failures before lock updates or Azure publication/provisioning. See
+[`docs/secrets.md`](docs/secrets.md) for rotation and its separate fleet-token
+recovery requirements.
 
 ## NixOS Configuration
 
@@ -199,7 +217,7 @@ Go to **Settings → Secrets and variables → Actions → Secrets** (or use the
 | `AZURE_TENANT_ID` | all Azure workflows | Azure AD tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | all Azure workflows | Target subscription ID |
 | `ADMIN_SSH_PUBLIC_KEY` | `deploy-workload`, `ci-pr` | SSH public key injected into VM `authorized_keys` |
-| `GH_PAT` | `update-flake-lock`, `deploy-workload` | Fine-grained PAT (Contents + Pull requests + Commit statuses, R/W) |
+| `GH_PAT` | `update-flake-lock`, `image-bake`, `deploy-workload` | Fine-grained PAT (Contents, Pull requests, Commit statuses, and Issues for failure reporting, R/W); rotate the encrypted fleet copy separately. |
 | `CI_SP_OBJECT_ID` | `global` | Object ID of CI service principal for Key Vault Secrets Officer. Get: `az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv` |
 
 See [docs/secrets.md](docs/secrets.md) for full setup instructions for each secret.
@@ -211,7 +229,7 @@ gh secret set AZURE_CLIENT_ID --body "<value from bootstrap output>"
 gh secret set AZURE_TENANT_ID --body "<value from bootstrap output>"
 gh secret set AZURE_SUBSCRIPTION_ID --body "<value from bootstrap output>"
 gh secret set ADMIN_SSH_PUBLIC_KEY --body "$(cat ~/.ssh/id_ed25519.pub)"
-gh secret set GH_PAT --body "<your fine-grained PAT>"
+gh secret set GH_PAT # enter the value at the hidden prompt
 CI_SP_OID=$(az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv)
 gh secret set CI_SP_OBJECT_ID --body "$CI_SP_OID"
 ```

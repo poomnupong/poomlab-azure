@@ -7,15 +7,8 @@
 #      automated/update-flake-lock containing only the changed flake.lock.
 #      If there is no diff (lock file already up to date) no PR is created.
 #   3. A team member reviews and merges the PR.
-#   4. The merge triggers ci-pr.yml (validation gate) on the PR and, once merged
-#      to main, triggers deploy-nixos.yml which nudges all affected VMs to run
-#      `nixos-rebuild switch` with the updated nixpkgs input.
-#
-# First run note:
-#   nixos/flake.lock does not yet exist in the repo. Running this workflow via
-#   workflow_dispatch for the first time will generate that initial lock file and
-#   open the bootstrapping PR. Merging that PR unblocks ci-pr.yml and
-#   deploy-nixos.yml, both of which currently fail because the lock file is absent.
+#   4. PR checks validate the updates. After merge, Comin on running VMs
+#      fetches main and applies the new inputs; image-bake builds a new image.
 #
 # Required secret — GH_PAT:
 #   This workflow uses a Personal Access Token (PAT) stored as the repository
@@ -59,7 +52,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+
+      - name: Verify GitHub credential
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: python3 .github/scripts/check-github-auth.py
 
       - name: Install Nix
         uses: cachix/install-nix-action@v27

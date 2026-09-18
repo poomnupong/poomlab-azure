@@ -37,10 +37,11 @@ nixos-azimage-builder (upstream, via core_pulse.nix input)
 
 | Trigger | Jobs run |
 |---|---|
-| PR touching `nixos/**`, `image-bake/**`, or the workflow file | `build` only (Tier 1 QEMU smoke, no Azure cost) |
+| PR touching watched NixOS/image paths, the workflow, smoke/auth helpers, or their tests | `build` only (Tier 1 QEMU smoke, no Azure cost) |
 | Push to `main` (same paths) | `build` → `publish` → `smoke-tier2` |
 | Saturday 14:00 UTC schedule | `build` → `publish` → `smoke-tier2` |
-| Manual `workflow_dispatch` | `build` → `publish` → `smoke-tier2` |
+| Manual `workflow_dispatch` on `main` | `build` → `publish` → `smoke-tier2` |
+| Manual `workflow_dispatch` on another branch | `build` only |
 
 ## Jobs
 
@@ -64,22 +65,40 @@ Runs on every trigger. No Azure credentials needed.
 
 Runs on `main` branch only. Requires Azure OIDC (`production` environment).
 
-1. Ensures the Compute Gallery exists (managed by `global.yml`).
-2. Downloads `.vhd.gz` artifact from `build`.
-3. Stages VHD to a managed disk, uploads via AzCopy, creates gallery image version.
-4. Polls until replication completes.
-5. Tags `tier1=passed` on the gallery image version.
+1. Checks the effective `GH_PAT` against this repository revision before Azure
+   login or mutation. Missing, rejected, and inaccessible credentials fail
+   explicitly; network failures are not diagnosed as expiration.
+2. Ensures the Compute Gallery exists (managed by `global.yml`).
+3. Downloads `.vhd.gz` artifact from `build`.
+4. Stages VHD to a managed disk, uploads via AzCopy, creates gallery image version.
+5. Polls until replication completes.
+6. Tags `tier1=passed` on the gallery image version.
 
 ### `smoke-tier2` — Real Azure Smoke
 
 Runs only after `publish` succeeds, on `main` branch only.
 
-1. Provisions a throwaway VM (`rg-plaz-smoke-<run_id>`) from the new gallery image version.
-2. Waits for waagent `displayStatus == "Ready"`.
-3. Asserts `comin.service` active via `az vm run-command invoke` with a `TIER2_OK` sentinel.
-4. Single-attempt SSH assert (`nixos-version && systemctl is-active comin`).
-5. Tears down the sandbox RG unconditionally (even on failure).
-6. Tags `blessed=true tier2=passed` on the gallery image version.
+1. Rechecks the effective `production`-environment `GH_PAT` before provisioning,
+   including when only this job is rerun.
+2. Provisions a throwaway VM in `rg-plaz-smoke-<run_id>-<run_attempt>`.
+3. Waits for waagent readiness and installs the Comin bootstrap credential.
+4. Uses the shared Comin observation helper to wait for a successful first
+   deployment and current authenticated GitOps evidence. Permanent authentication
+   failures fail early; observation/transport failures are surfaced explicitly.
+   Its wall-clock deadline includes remote-command time, not just sleep time.
+   Observation is capped at 30 minutes and ends no later than 32 minutes after
+   the job's initial budget step, reserving time for assertions and cleanup
+   within the 45-minute job. Provisioning/readiness steps are bounded separately.
+5. Checks the `plaz-smoke` hostname, active Comin, and NixOS through Run Command,
+   without relying on SSH keys that configuration application can replace.
+6. Always attempts sandbox cleanup, waits for resource-group deletion, and fails
+   explicitly if cleanup cannot be confirmed.
+7. Tags `blessed=true tier2=passed` only after successful validation and cleanup.
+
+PR builds remain secretless. The updater's successful read/write checks and
+Tier 1 QEMU checks do not replace this real-Azure test. Rerunning an old job can
+verify a replacement secret, but it does not validate changed workflow code:
+run the changed revision for that.
 
 ## `image-bake/flake.nix` Structure
 
@@ -117,4 +136,7 @@ If no `blessed=true` version exists, the deploy fails fast with a clear error.
 
 ## Garbage Collection
 
-After tagging a new `blessed=true` version, older un-blessed versions are deleted eagerly. The last 4 blessed versions are retained; older blessed versions are untagged and may be deleted.
+The current workflow deletes its temporary staging and smoke resources, not
+older gallery image versions. A keep-last-four gallery retention policy is a
+future operational decision, not an implemented cleanup guarantee. Review the
+inventory and obtain explicit approval before deleting gallery versions.
