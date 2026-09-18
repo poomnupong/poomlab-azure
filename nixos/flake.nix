@@ -6,15 +6,8 @@
 #   - After Comin is running on the box, all config changes are pulled
 #     automatically — the runner is not in the deployment hot path.
 #
-# How Comin gets onto the box (in transition):
-#   - Today: deploy-infra bootstraps Comin on first VM creation via
-#     run-command + ephemeral SSH (see docs/comin-deployment.md). This is
-#     the legacy path and is the source of most operational pain.
-#   - Target: Comin is baked into the gallery image by the `image-bake`
-#     workflow; first boot already has comin.service running. The
-#     run-command bootstrap goes away in Phase 5.
-#   See docs/architecture-refactor.md (D2, D4) and tracking PR #45:
-#     https://github.com/poomnupong/poomlab-azure/pull/45
+# Comin is baked into gallery images. deploy-workload delivers host keys
+# and bootstrap authentication when creating a gateway.
 #
 # Usage:
 #   nix flake check          — validate all host configs
@@ -23,10 +16,8 @@
 # To add a new VM:
 #   1. Add a nixosConfigurations.<vmname> entry below.
 #   2. Create a nixos/hosts/<vmname>/ directory with default.nix and hardware.nix.
-#   3. Add the VM's age public key to nixos/secrets/secrets.nix.
-#   4. Until image-bake lands, add a bootstrap step in deploy-infra.yml for
-#      the new VM. After image-bake lands, no per-VM workflow change is
-#      needed beyond the gallery image already having Comin baked in.
+#   3. Add its region/parameter files as described in docs/regions.md.
+#      deploy-workload generates and registers the host's age public key.
 
 {
   description = "plaz NixOS host configurations";
@@ -72,22 +63,6 @@
         modules = [
           ./hosts/gw1-scus/default.nix
           ./hosts/gw1-scus/hardware.nix
-          # Comin GitOps pull-based deployment
-          comin.nixosModules.comin
-          ./modules/comin.nix
-          # Agenix encrypted secrets
-          agenix.nixosModules.default
-          ./modules/agenix.nix
-        ];
-      };
-
-      # ── gw1-sea: NixOS gateway / NVA VM (Southeast Asia / Singapore)
-      gw1-sea = nixpkgs-stable.lib.nixosSystem {
-        inherit system;
-        specialArgs = { inherit pkgs-unstable; };
-        modules = [
-          ./hosts/gw1-sea/default.nix
-          ./hosts/gw1-sea/hardware.nix
           # Comin GitOps pull-based deployment
           comin.nixosModules.comin
           ./modules/comin.nix

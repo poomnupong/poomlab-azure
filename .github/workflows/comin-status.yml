@@ -77,6 +77,7 @@ jobs:
         id: regions
         run: |
           set -euo pipefail
+          python3 .github/scripts/gateway-power.py --validate-registry
           if [ ! -f infra/regions.json ]; then
             echo "::error::infra/regions.json is missing"
             exit 1

@@ -96,6 +96,7 @@ Each host under `nixos/hosts/<vmname>/` is self-contained — `default.nix` impo
 | `landing-zone` | `.github/workflows/landing-zone.yml` | Manual + landing-zone Bicep path changes | Deploys regional platform resources (monitoring, VNET/NSGs). Standalone use only — deploy-workload handles this automatically when enabling a new region. |
 | `deploy-workload` | `.github/workflows/deploy-workload.yml` | Push to `main` on `infra/workload.bicep`, `infra/landing-zone.bicep`, `infra/regions.json` + manual + after `global` completes | Deploys all enabled regions. Auto-deploys landing-zone inline for new regions. Resolves newest `blessed=true` image. Option A agenix key delivery via cloud-init. No SSH bootstrap. |
 | `comin-status` | `.github/workflows/comin-status.yml` | Daily + manual | Reports current Comin health on running VMs; stopped/absent gateways are explicitly not checked and are never started. |
+| `gateway-power` | `.github/workflows/gateway-power.yml` | Manual, main only | Per-environment `status`, `start`, or `deallocate`, serialized with regional deployment/cleanup. Does not change region membership. |
 | `update-flake-lock` | `.github/workflows/update-flake-lock.yml` | Weekly Monday 08:00 UTC + manual | Updates `nixos/flake.lock` and `image-bake/flake.lock`, opens PR. |
 | `rotate-secrets-reminder` | `.github/workflows/rotate-secrets-reminder.yml` | Monthly 1st + manual | Creates GitHub issue with secrets rotation checklist. |
 | `destroy-infra` | `.github/workflows/destroy-infra.yml` | Manual only | Deletes all Azure resource groups. |
@@ -246,9 +247,9 @@ The deployment flow has three steps run in order:
 
 3. **Run `deploy-workload`** — deploys all enabled regions from the newest `blessed=true` image. Automatically deploys the regional landing-zone (VNET, monitoring) inline if it doesn't exist yet, so no separate `landing-zone` workflow run is required. Injects the SSH host key via cloud-init `customData`. Comin starts on first boot and applies the full NixOS config automatically. No SSH bootstrap required.
 
-> **Enabling a region:** Flip `enabled` to `true` in `infra/regions.json` and push. `deploy-workload` auto-deploys both landing-zone and workload for the new region.
-> **Disabling a region:** Flip `enabled` to `false` in `infra/regions.json` (keep the entry) and push. `deploy-workload` automatically detects regions that were previously enabled but are now disabled and tears down all matching regional resource groups (`rg-<project>-*-<location>`). The disabled entry can still be redeployed on demand via `workflow_dispatch` with that single environment.
-> **Removing a region:** Delete its entry from `infra/regions.json` entirely. The next push tears down its resource groups; afterwards, manual redeploy via `workflow_dispatch` is no longer possible (re-add the entry first).
+> **Add/remove regions:** Follow [Region lifecycle](docs/regions.md). The registry controls membership, not power. Disabling or removing a secondary region tears down its compute/network/monitoring groups and removes its gallery replicas; shared gallery and Key Vault resources are preserved.
+> **Turn a gateway off/on:** Run `gateway-power` on `main`, choose its environment (currently `plaz`), and select `deallocate` or `start`. Use `status` for a read-only check. Existing stopped/deallocated gateways are not started, rebuilt, or key-rotated by workload deployment. A successful start verifies Azure power, not Comin health.
+> **Add a new region:** Provide its registry entry, parameter files, and NixOS host configuration. A registry change also triggers image baking. If no blessed image is available in the new region yet, VM creation is explicitly deferred; successful image baking retries missing gateways only.
 > **Removing/renaming a host in an enabled region:** `deploy-workload` now also reconciles VM inventory inside `rg-<project>-compute-<location>` and deletes stale hosts (VM + OS disk + NIC + Public IP) that match the managed naming pattern (`vm-<project>-<gateway>-<location>`) but are no longer present in `infra/regions.json`.
 
 ## Configuration
@@ -256,7 +257,7 @@ The deployment flow has three steps run in order:
 Key parameters are split across three environment param files:
 
 - `infra/environments/plaz-global.bicepparam` — project-wide shared services (primary region, project name, region code for Key Vault name, CI SP object ID)
-- `infra/environments/plaz-landing-zone.bicepparam` — regional platform resources (location, project name, networking CIDRs). One file per region (also `plaz-sea-landing-zone.bicepparam`, …).
+- `infra/environments/plaz-landing-zone.bicepparam` — regional platform resources (location, project name, networking CIDRs). One file per enabled region.
 - `infra/environments/plaz-workload.bicepparam` — compute resources (VM size, admin username, SSH key, image ID, cloud-init data). One file per region.
 
 All files use `readEnvironmentVariable()` for secrets and dynamic values that are injected by the workflows at deploy time.

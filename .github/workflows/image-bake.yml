@@ -35,6 +35,8 @@ on:
       - '.github/scripts/check-github-auth.py'
       - '.github/scripts/*comin*'
       - '.github/scripts/az-run-command.sh'
+      - '.github/scripts/gateway-power.py'
+      - 'infra/regions.json'
       - '.github/tests/**'
   pull_request:
     branches: [main]
@@ -47,6 +49,8 @@ on:
       - '.github/scripts/check-github-auth.py'
       - '.github/scripts/*comin*'
       - '.github/scripts/az-run-command.sh'
+      - '.github/scripts/gateway-power.py'
+      - 'infra/regions.json'
       - '.github/tests/**'
   workflow_dispatch:
 
@@ -77,6 +81,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate region registry
+        run: python3 .github/scripts/gateway-power.py --validate-registry
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v14

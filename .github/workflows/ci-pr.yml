@@ -39,6 +39,9 @@ jobs:
       - name: Test workflow helpers and guards
         run: python3 -B -m unittest discover -s .github/tests -v
 
+      - name: Validate region registry
+        run: python3 .github/scripts/gateway-power.py --validate-registry
+
       - name: Lint remote observation script
         run: shellcheck .github/scripts/comin-observe.sh
 
@@ -51,6 +54,9 @@ jobs:
             .github/workflows/image-bake.yml
             .github/workflows/comin-status.yml
             .github/workflows/copilot-auto-retry.yml
+            .github/workflows/gateway-power.yml
+            .github/workflows/deploy-workload.yml
+            .github/workflows/landing-zone.yml
 
   # ------------------------------------------------------------------
   # Detect which paths changed
